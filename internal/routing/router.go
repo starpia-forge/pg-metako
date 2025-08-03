@@ -135,28 +135,39 @@ func (qr *QueryRouter) RouteQuery(ctx context.Context, query string, args ...int
 	return result, nil
 }
 
-// SelectReadNode selects a slave node for read operations using the configured load balancing algorithm
+// SelectReadNode selects a node for read operations using the configured load balancing algorithm
+// This includes both master and slave nodes in the selection pool
 func (qr *QueryRouter) SelectReadNode() *database.ConnectionManager {
-	slaves := qr.replicationManager.GetSlaveNodes()
-	if len(slaves) == 0 {
-		// Fallback to master if no slaves available
-		return qr.replicationManager.GetCurrentMaster()
+	// Get all available nodes (master + slaves)
+	var allNodes []*database.ConnectionManager
+
+	// Add master node to the pool
+	master := qr.replicationManager.GetCurrentMaster()
+	if master != nil {
+		allNodes = append(allNodes, master)
 	}
 
-	// Filter healthy slaves
-	healthySlaves := qr.filterHealthyNodes(slaves)
-	if len(healthySlaves) == 0 {
-		// Fallback to master if no healthy slaves
-		return qr.replicationManager.GetCurrentMaster()
+	// Add slave nodes to the pool
+	slaves := qr.replicationManager.GetSlaveNodes()
+	allNodes = append(allNodes, slaves...)
+
+	if len(allNodes) == 0 {
+		return nil
+	}
+
+	// Filter healthy nodes from all available nodes
+	healthyNodes := qr.filterHealthyNodes(allNodes)
+	if len(healthyNodes) == 0 {
+		return nil
 	}
 
 	switch qr.config.Algorithm {
 	case config.AlgorithmRoundRobin:
-		return qr.selectRoundRobin(healthySlaves)
+		return qr.selectRoundRobin(healthyNodes)
 	case config.AlgorithmLeastConnected:
-		return qr.selectLeastConnected(healthySlaves)
+		return qr.selectLeastConnected(healthyNodes)
 	default:
-		return qr.selectRoundRobin(healthySlaves)
+		return qr.selectRoundRobin(healthyNodes)
 	}
 }
 
