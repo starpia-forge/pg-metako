@@ -342,13 +342,13 @@ docker-compose exec postgres-master psql -U postgres -c "SELECT * FROM pg_stat_r
 애플리케이션은 포괄적인 로깅을 제공합니다:
 
 ```
-2025/08/03 15:46:51 configs/example.yaml에서 구성 로딩 중
-2025/08/03 15:46:51 3개 노드로 구성이 성공적으로 로드됨
-2025/08/03 15:46:51 노드 master-1 (master)을 클러스터에 추가함
-2025/08/03 15:46:51 노드 slave-1 (slave)을 클러스터에 추가함
-2025/08/03 15:46:51 상태 모니터링 시작됨
-2025/08/03 15:46:51 페일오버 모니터링 시작됨
-2025/08/03 15:46:51 pg-metako가 성공적으로 시작됨
+2025/08/03 15:46:51 Loading configuration from configs/example.yaml
+2025/08/03 15:46:51 Configuration loaded successfully with 3 nodes
+2025/08/03 15:46:51 Added node master-1 (master) to cluster
+2025/08/03 15:46:51 Added node slave-1 (slave) to cluster
+2025/08/03 15:46:51 Health monitoring started
+2025/08/03 15:46:51 Failover monitoring started
+2025/08/03 15:46:51 pg-metako started successfully
 ```
 
 주기적인 상태 보고서에는 다음이 포함됩니다:
@@ -455,14 +455,6 @@ go test -v ./...
 go test -v ./internal/config
 ```
 
-### 개발 원칙
-
-이 프로젝트는 테스트 주도 개발(TDD)과 Kent Beck의 "Tidy First" 원칙을 따릅니다:
-- Red-Green-Refactor 사이클
-- 포괄적인 테스트 커버리지
-- 깨끗하고 읽기 쉬운 코드
-- 관심사의 분리
-
 ## PostgreSQL 설정
 
 ### 마스터 구성
@@ -495,24 +487,6 @@ primary_conninfo = 'host=master_ip port=5432 user=replicator'
 2. **인증 실패**: 구성에서 사용자명/비밀번호 확인
 3. **정상 슬레이브 없음**: 슬레이브 노드 연결성 및 복제 상태 확인
 4. **페일오버가 작동하지 않음**: 실패 임계값 및 상태 확인 설정 확인
-
-### 로그
-
-모든 작업은 타임스탬프와 컨텍스트와 함께 로그됩니다:
-- 구성 로딩 및 검증
-- 노드 상태 변경
-- 페일오버 이벤트 및 슬레이브 승격
-- 쿼리 라우팅 결정
-- 연결 통계
-
-## 기여
-
-1. 저장소 포크
-2. 기능 브랜치 생성
-3. 새 기능에 대한 테스트 작성
-4. TDD 원칙에 따라 기능 구현
-5. 모든 테스트가 통과하는지 확인
-6. 풀 리퀘스트 제출
 
 ## 라이선스
 

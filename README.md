@@ -455,14 +455,6 @@ Run tests for a specific package:
 go test -v ./internal/config
 ```
 
-### Development Principles
-
-The project follows Test-Driven Development (TDD) and Kent Beck's "Tidy First" principles:
-- Red-Green-Refactor cycle
-- Comprehensive test coverage
-- Clean, readable code
-- Separation of concerns
-
 ## PostgreSQL Setup
 
 ### Master Configuration
@@ -495,24 +487,6 @@ primary_conninfo = 'host=master_ip port=5432 user=replicator'
 2. **Authentication failed**: Verify username/password in configuration
 3. **No healthy slaves**: Check slave node connectivity and replication status
 4. **Failover not working**: Verify failure threshold and health check settings
-
-### Logs
-
-All operations are logged with timestamps and context:
-- Configuration loading and validation
-- Node health status changes
-- Failover events and slave promotions
-- Query routing decisions
-- Connection statistics
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Write tests for new functionality
-4. Implement the feature following TDD principles
-5. Ensure all tests pass
-6. Submit a pull request
 
 ## License
 
