@@ -7,7 +7,6 @@ package metako
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -16,6 +15,7 @@ import (
 	"pg-metako/internal/config"
 	"pg-metako/internal/database"
 	"pg-metako/internal/health"
+	"pg-metako/internal/logger"
 	"pg-metako/internal/replication"
 	"pg-metako/internal/routing"
 )
@@ -59,7 +59,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		}
 
 		connectionManagers = append(connectionManagers, connManager)
-		log.Printf("Added node %s (%s) to cluster", nodeConfig.Name, nodeConfig.Role)
+		logger.Printf("Added node %s (%s) to cluster", nodeConfig.Name, nodeConfig.Role)
 	}
 
 	return &Application{
@@ -73,15 +73,15 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 
 // Start starts the application
 func (app *Application) Start(ctx context.Context) error {
-	log.Println("Starting application components...")
+	logger.Println("Starting application components...")
 
 	// Connect to all database nodes
 	for _, connManager := range app.connectionManagers {
 		connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		if err := connManager.Connect(connectCtx); err != nil {
-			log.Printf("Warning: Failed to connect to node %s: %v", connManager.NodeName(), err)
+			logger.Printf("Warning: Failed to connect to node %s: %v", connManager.NodeName(), err)
 		} else {
-			log.Printf("Successfully connected to node %s", connManager.NodeName())
+			logger.Printf("Successfully connected to node %s", connManager.NodeName())
 		}
 		cancel()
 	}
@@ -90,13 +90,13 @@ func (app *Application) Start(ctx context.Context) error {
 	if err := app.healthChecker.StartMonitoring(ctx); err != nil {
 		return fmt.Errorf("failed to start health monitoring: %w", err)
 	}
-	log.Println("Health monitoring started")
+	logger.Println("Health monitoring started")
 
 	// Start failover monitoring
 	if err := app.replicationManager.StartFailoverMonitoring(ctx); err != nil {
 		return fmt.Errorf("failed to start failover monitoring: %w", err)
 	}
-	log.Println("Failover monitoring started")
+	logger.Println("Failover monitoring started")
 
 	// Start a goroutine to periodically log cluster status
 	go app.statusReporter(ctx)
@@ -106,21 +106,21 @@ func (app *Application) Start(ctx context.Context) error {
 
 // Stop stops the application gracefully
 func (app *Application) Stop(ctx context.Context) error {
-	log.Println("Stopping application components...")
+	logger.Println("Stopping application components...")
 
 	// Stop monitoring
 	app.replicationManager.StopFailoverMonitoring()
-	log.Println("Failover monitoring stopped")
+	logger.Println("Failover monitoring stopped")
 
 	app.healthChecker.StopMonitoring()
-	log.Println("Health monitoring stopped")
+	logger.Println("Health monitoring stopped")
 
 	// Close all database connections
 	for _, connManager := range app.connectionManagers {
 		if err := connManager.Close(); err != nil {
-			log.Printf("Warning: Failed to close connection to node %s: %v", connManager.NodeName(), err)
+			logger.Printf("Warning: Failed to close connection to node %s: %v", connManager.NodeName(), err)
 		} else {
-			log.Printf("Closed connection to node %s", connManager.NodeName())
+			logger.Printf("Closed connection to node %s", connManager.NodeName())
 		}
 	}
 
@@ -134,7 +134,7 @@ func (app *Application) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to start application: %w", err)
 	}
 
-	log.Println("Application started successfully")
+	logger.Println("Application started successfully")
 
 	// Wait for shutdown signal or context cancellation
 	sigChan := make(chan os.Signal, 1)
@@ -142,9 +142,9 @@ func (app *Application) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		log.Println("Context cancelled, stopping application...")
+		logger.Println("Context cancelled, stopping application...")
 	case <-sigChan:
-		log.Println("Shutdown signal received, stopping application...")
+		logger.Println("Shutdown signal received, stopping application...")
 	}
 
 	// Graceful shutdown
@@ -152,11 +152,11 @@ func (app *Application) Run(ctx context.Context) error {
 	defer shutdownCancel()
 
 	if err := app.Stop(shutdownCtx); err != nil {
-		log.Printf("Error during shutdown: %v", err)
+		logger.Printf("Error during shutdown: %v", err)
 		return err
 	}
 
-	log.Println("Application stopped")
+	logger.Println("Application stopped")
 	return nil
 }
 
@@ -180,9 +180,9 @@ func (app *Application) logClusterStatus() {
 	// Get current master
 	master := app.replicationManager.GetCurrentMaster()
 	if master != nil {
-		log.Printf("Current master: %s", master.NodeName())
+		logger.Printf("Current master: %s", master.NodeName())
 	} else {
-		log.Println("No current master available")
+		logger.Println("No current master available")
 	}
 
 	// Get node statuses
@@ -192,16 +192,16 @@ func (app *Application) logClusterStatus() {
 		if status.IsHealthy {
 			healthyCount++
 		}
-		log.Printf("Node %s: healthy=%t, failures=%d, last_checked=%v",
+		logger.Printf("Node %s: healthy=%t, failures=%d, last_checked=%v",
 			nodeName, status.IsHealthy, status.FailureCount, status.LastChecked.Format(time.RFC3339))
 	}
 
 	// Get query router stats
 	stats := app.queryRouter.GetConnectionStats()
-	log.Printf("Query stats: total=%d, reads=%d, writes=%d, failed=%d",
+	logger.Printf("Query stats: total=%d, reads=%d, writes=%d, failed=%d",
 		stats.TotalQueries, stats.ReadQueries, stats.WriteQueries, stats.FailedQueries)
 
-	log.Printf("Cluster status: %d/%d nodes healthy", healthyCount, len(statuses))
+	logger.Printf("Cluster status: %d/%d nodes healthy", healthyCount, len(statuses))
 }
 
 // GetQueryRouter returns the query router for external use (e.g., HTTP API)
