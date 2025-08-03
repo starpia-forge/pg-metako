@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultConfigPath = "configs/example.yaml"
+	defaultConfigPath = "configs/config.yaml"
 	appName           = "pg-metako"
 	version           = "1.0.0"
 )
