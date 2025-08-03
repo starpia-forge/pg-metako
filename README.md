@@ -1,3 +1,10 @@
+## Languages | 언어
+
+- [English](README.md) (Current)
+- [한국어](README_ko.md)
+
+---
+
 # pg-metako
 
 A high-availability PostgreSQL replication management system written in Go.
