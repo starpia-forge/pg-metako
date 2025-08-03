@@ -1,0 +1,37 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "pg-metako-master",
+      "Group": "pg-metako",
+      "Host": "postgres-master",
+      "Port": 5432,
+      "MaintenanceDB": "myapp",
+      "Username": "postgres",
+      "PassFile": "/tmp/pgpassfile",
+      "SSLMode": "prefer",
+      "Comment": "PostgreSQL Master Database"
+    },
+    "2": {
+      "Name": "pg-metako-slave1",
+      "Group": "pg-metako",
+      "Host": "postgres-slave1",
+      "Port": 5432,
+      "MaintenanceDB": "myapp",
+      "Username": "postgres",
+      "PassFile": "/tmp/pgpassfile",
+      "SSLMode": "prefer",
+      "Comment": "PostgreSQL Slave 1 Database"
+    },
+    "3": {
+      "Name": "pg-metako-slave2",
+      "Group": "pg-metako",
+      "Host": "postgres-slave2",
+      "Port": 5432,
+      "MaintenanceDB": "myapp",
+      "Username": "postgres",
+      "PassFile": "/tmp/pgpassfile",
+      "SSLMode": "prefer",
+      "Comment": "PostgreSQL Slave 2 Database"
+    }
+  }
+}

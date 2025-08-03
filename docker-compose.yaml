@@ -1,0 +1,180 @@
+# Purpose    : Docker Compose configuration for pg-metako with PostgreSQL replication
+# Context    : Complete development and production environment setup
+# Constraints: Must provide easy configuration, data persistence, and proper networking
+
+version: '3.8'
+
+services:
+  # PostgreSQL Master Database
+  postgres-master:
+    image: postgres:15-alpine
+    container_name: pg-metako-master
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-myapp}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replicator_password}
+    ports:
+      - "${POSTGRES_MASTER_PORT:-5432}:5432"
+    volumes:
+      - postgres_master_data:/var/lib/postgresql/data
+      - ./docker/postgres/master/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./docker/postgres/master/pg_hba.conf:/etc/postgresql/pg_hba.conf
+      - ./docker/postgres/init-master.sh:/docker-entrypoint-initdb.d/init-master.sh
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    networks:
+      - pg-metako-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-myapp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # PostgreSQL Slave Database 1
+  postgres-slave1:
+    image: postgres:15-alpine
+    container_name: pg-metako-slave1
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-myapp}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_MASTER_HOST: postgres-master
+      POSTGRES_MASTER_PORT: 5432
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replicator_password}
+    ports:
+      - "${POSTGRES_SLAVE1_PORT:-5433}:5432"
+    volumes:
+      - postgres_slave1_data:/var/lib/postgresql/data
+      - ./docker/postgres/slave/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./docker/postgres/slave/pg_hba.conf:/etc/postgresql/pg_hba.conf
+      - ./docker/postgres/init-slave.sh:/docker-entrypoint-initdb.d/init-slave.sh
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    networks:
+      - pg-metako-network
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-myapp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # PostgreSQL Slave Database 2
+  postgres-slave2:
+    image: postgres:15-alpine
+    container_name: pg-metako-slave2
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-myapp}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_MASTER_HOST: postgres-master
+      POSTGRES_MASTER_PORT: 5432
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replicator_password}
+    ports:
+      - "${POSTGRES_SLAVE2_PORT:-5434}:5432"
+    volumes:
+      - postgres_slave2_data:/var/lib/postgresql/data
+      - ./docker/postgres/slave/postgresql.conf:/etc/postgresql/postgresql.conf
+      - ./docker/postgres/slave/pg_hba.conf:/etc/postgresql/pg_hba.conf
+      - ./docker/postgres/init-slave.sh:/docker-entrypoint-initdb.d/init-slave.sh
+    command: >
+      postgres
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    networks:
+      - pg-metako-network
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-myapp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # pg-metako Application
+  pg-metako:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pg-metako-app
+    environment:
+      - PG_METAKO_CONFIG_PATH=/app/configs/docker.yaml
+      - PG_METAKO_LOG_LEVEL=${LOG_LEVEL:-info}
+    ports:
+      - "${PG_METAKO_PORT:-8080}:8080"
+    volumes:
+      - ./configs/docker.yaml:/app/configs/docker.yaml:ro
+      - pg_metako_logs:/app/logs
+    networks:
+      - pg-metako-network
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+      postgres-slave1:
+        condition: service_healthy
+      postgres-slave2:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "pgrep", "pg-metako"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pg-metako-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@pgmetako.local}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "${PGADMIN_PORT:-8081}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
+    networks:
+      - pg-metako-network
+    depends_on:
+      - postgres-master
+      - postgres-slave1
+      - postgres-slave2
+    profiles:
+      - admin
+
+# Named volumes for data persistence
+volumes:
+  postgres_master_data:
+    driver: local
+  postgres_slave1_data:
+    driver: local
+  postgres_slave2_data:
+    driver: local
+  pg_metako_logs:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# Custom network for service communication
+networks:
+  pg-metako-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

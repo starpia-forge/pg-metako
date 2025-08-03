@@ -1,0 +1,82 @@
+# Purpose    : Exclude unnecessary files from Docker build context
+# Context    : Optimize Docker build performance and image size
+# Constraints: Must exclude development files while keeping essential build files
+
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# IDE and editor files
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build artifacts
+bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files and coverage
+*_test.go
+coverage.out
+coverage.html
+.coverage
+
+# Documentation (keep essential docs)
+README.md
+!README.md
+docs/
+*.md
+!docker-compose.yaml
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp
+
+# Docker files (exclude from build context to avoid recursion)
+Dockerfile*
+docker-compose*.yml
+docker-compose*.yaml
+.dockerignore
+
+# Environment files (these should be mounted as volumes)
+.env
+.env.*
+
+# Development dependencies
+node_modules/
+vendor/
+
+# Go specific
+go.sum
+# Keep go.mod as it's needed for dependency resolution
+
+# Project specific exclusions
+examples/
+scripts/
+.junie
+
+# Keep essential files for build
+!go.mod
+!cmd/
+!internal/
+!configs/
