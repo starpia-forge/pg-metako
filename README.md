@@ -187,15 +187,19 @@ The project follows the [golang-standards/project-layout](https://github.com/gol
 
 ```
 ├── cmd/pg-metako/          # Main application
-├── internal/pkg/           # Private application packages
+├── internal/               # Private application packages
 │   ├── config/            # Configuration management
 │   ├── database/          # Database connection handling
 │   ├── health/            # Health checking
+│   ├── metako/            # Main application orchestration
 │   ├── replication/       # Replication and failover
 │   └── routing/           # Query routing and load balancing
 ├── configs/               # Configuration examples
 ├── docs/                  # Documentation
-└── examples/              # Usage examples
+├── bin/                   # Compiled binaries
+├── go.mod                 # Go module definition
+├── go.sum                 # Go module checksums
+└── README.md              # Project documentation
 ```
 
 ### Testing
@@ -212,7 +216,7 @@ go test -v ./...
 
 Run tests for a specific package:
 ```bash
-go test -v ./internal/pkg/config
+go test -v ./internal/config
 ```
 
 ### Development Principles
@@ -276,7 +280,13 @@ All operations are logged with timestamps and context:
 
 ## License
 
-[Add your license information here]
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+Copyright (c) 2025 pg-metako
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 ## Support
 
