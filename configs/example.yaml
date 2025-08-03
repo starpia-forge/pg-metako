@@ -1,0 +1,43 @@
+# Example configuration for pg-metako PostgreSQL replication management
+nodes:
+  - name: "master-1"
+    host: "localhost"
+    port: 5432
+    role: "master"
+    username: "postgres"
+    password: "password"
+    database: "myapp"
+  
+  - name: "slave-1"
+    host: "localhost"
+    port: 5433
+    role: "slave"
+    username: "postgres"
+    password: "password"
+    database: "myapp"
+  
+  - name: "slave-2"
+    host: "localhost"
+    port: 5434
+    role: "slave"
+    username: "postgres"
+    password: "password"
+    database: "myapp"
+
+# Health check configuration
+health_check:
+  interval: "30s"          # How often to check node health
+  timeout: "5s"            # Timeout for each health check
+  failure_threshold: 3     # Number of consecutive failures before marking node as unhealthy
+
+# Load balancer configuration
+load_balancer:
+  algorithm: "round_robin" # Options: round_robin, least_connected
+  read_timeout: "10s"      # Timeout for read queries
+  write_timeout: "10s"     # Timeout for write queries
+
+# Security configuration
+security:
+  tls_enabled: true
+  cert_file: "/etc/ssl/certs/pg-metako.crt"
+  key_file: "/etc/ssl/private/pg-metako.key"
