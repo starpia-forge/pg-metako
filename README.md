@@ -339,16 +339,16 @@ Options:
 
 ### Monitoring
 
-The application provides comprehensive logging:
+The application provides comprehensive structured logging in JSON format:
 
 ```
-2025/08/03 15:46:51 Loading configuration from configs/example.yaml
-2025/08/03 15:46:51 Configuration loaded successfully with 3 nodes
-2025/08/03 15:46:51 Added node master-1 (master) to cluster
-2025/08/03 15:46:51 Added node slave-1 (slave) to cluster
-2025/08/03 15:46:51 Health monitoring started
-2025/08/03 15:46:51 Failover monitoring started
-2025/08/03 15:46:51 pg-metako started successfully
+{"time":"2025-08-03T22:41:20.552941+09:00","level":"INFO","msg":"Loading configuration from configs/example.yaml"}
+{"time":"2025-08-03T22:41:20.553267+09:00","level":"INFO","msg":"Configuration loaded successfully with 3 nodes"}
+{"time":"2025-08-03T22:41:20.553269+09:00","level":"INFO","msg":"Added node master-1 (master) to cluster"}
+{"time":"2025-08-03T22:41:20.553271+09:00","level":"INFO","msg":"Added node slave-1 (slave) to cluster"}
+{"time":"2025-08-03T22:41:20.553276+09:00","level":"INFO","msg":"Health monitoring started"}
+{"time":"2025-08-03T22:41:20.553277+09:00","level":"INFO","msg":"Failover monitoring started"}
+{"time":"2025-08-03T22:41:20.553278+09:00","level":"INFO","msg":"Application started successfully"}
 ```
 
 Periodic status reports include:
