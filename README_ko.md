@@ -78,6 +78,10 @@ cd pg-metako
 
 2. 애플리케이션 빌드:
 ```bash
+# Makefile 사용 (권장)
+make build
+
+# 또는 Go 직접 사용
 go build -o bin/pg-metako ./cmd/pg-metako
 ```
 
@@ -376,15 +380,73 @@ docker-compose exec postgres-master psql -U postgres -c "SELECT * FROM pg_stat_r
 └── README.md              # 프로젝트 문서
 ```
 
+### Makefile
+
+이 프로젝트는 빌드 자동화를 위한 포괄적인 Makefile을 포함합니다. 사용 가능한 모든 대상을 확인하려면:
+
+```bash
+make help
+```
+
+#### 일반적인 명령
+
+**빌드 및 테스트:**
+```bash
+make build          # 애플리케이션 빌드
+make test           # 모든 테스트 실행
+make test-coverage  # 커버리지 보고서와 함께 테스트 실행
+make check          # 포맷, vet, 테스트 실행
+```
+
+**개발:**
+```bash
+make setup          # 개발 환경 설정
+make dev-setup      # 추가 개발 도구와 함께 설정
+make fmt            # Go 코드 포맷
+make vet            # go vet 실행
+make lint           # 린터 실행 (golangci-lint 필요)
+```
+
+**Docker:**
+```bash
+make docker-build   # Docker 이미지 빌드
+make docker-run     # Docker 컨테이너 실행
+make docker-compose-up    # Docker Compose로 서비스 시작
+make docker-compose-down  # Docker Compose로 서비스 중지
+```
+
+**크로스 플랫폼 빌드:**
+```bash
+make build-all      # 모든 플랫폼용 빌드
+make build-linux    # Linux용 빌드
+make build-windows  # Windows용 빌드
+make build-darwin   # macOS용 빌드
+```
+
+**릴리스 및 정리:**
+```bash
+make release        # 릴리스 빌드 생성
+make clean          # 빌드 아티팩트 정리
+make ci             # CI 파이프라인 실행
+```
+
 ### 테스트
 
 모든 테스트 실행:
 ```bash
+# Makefile 사용 (권장)
+make test
+
+# 또는 Go 직접 사용
 go test ./...
 ```
 
 상세한 출력으로 테스트 실행:
 ```bash
+# Makefile 사용
+make test-verbose
+
+# 또는 Go 직접 사용
 go test -v ./...
 ```
 

@@ -78,6 +78,10 @@ cd pg-metako
 
 2. Build the application:
 ```bash
+# Using Makefile (recommended)
+make build
+
+# Or using Go directly
 go build -o bin/pg-metako ./cmd/pg-metako
 ```
 
@@ -376,15 +380,73 @@ The project follows the [golang-standards/project-layout](https://github.com/gol
 └── README.md              # Project documentation
 ```
 
+### Makefile
+
+The project includes a comprehensive Makefile for build automation. View all available targets:
+
+```bash
+make help
+```
+
+#### Common Commands
+
+**Build and Test:**
+```bash
+make build          # Build the application
+make test           # Run all tests
+make test-coverage  # Run tests with coverage report
+make check          # Run format, vet, and tests
+```
+
+**Development:**
+```bash
+make setup          # Setup development environment
+make dev-setup      # Setup with additional development tools
+make fmt            # Format Go code
+make vet            # Run go vet
+make lint           # Run linter (requires golangci-lint)
+```
+
+**Docker:**
+```bash
+make docker-build   # Build Docker image
+make docker-run     # Run Docker container
+make docker-compose-up    # Start services with Docker Compose
+make docker-compose-down  # Stop services with Docker Compose
+```
+
+**Cross-platform Builds:**
+```bash
+make build-all      # Build for all platforms
+make build-linux    # Build for Linux
+make build-windows  # Build for Windows
+make build-darwin   # Build for macOS
+```
+
+**Release and Cleanup:**
+```bash
+make release        # Create release build
+make clean          # Clean build artifacts
+make ci             # Run CI pipeline
+```
+
 ### Testing
 
 Run all tests:
 ```bash
+# Using Makefile (recommended)
+make test
+
+# Or using Go directly
 go test ./...
 ```
 
 Run tests with verbose output:
 ```bash
+# Using Makefile
+make test-verbose
+
+# Or using Go directly
 go test -v ./...
 ```
 
