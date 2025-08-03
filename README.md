@@ -87,12 +87,12 @@ go build -o bin/pg-metako ./cmd/pg-metako
 
 3. Run with example configuration:
 ```bash
-./bin/pg-metako --config configs/example.yaml
+./bin/pg-metako --config configs/config.yaml
 ```
 
 ### Configuration
 
-Create a YAML configuration file (see `configs/example.yaml`):
+Create a YAML configuration file (see `configs/config.yaml`):
 
 ```yaml
 # Database nodes configuration
@@ -316,7 +316,7 @@ docker-compose exec postgres-master psql -U postgres -c "SELECT * FROM pg_stat_r
 ./bin/pg-metako [options]
 
 Options:
-  --config string    Path to configuration file (default "configs/example.yaml")
+  --config string    Path to configuration file (default "configs/config.yaml")
   --version         Show version information
 ```
 
@@ -342,7 +342,7 @@ Options:
 The application provides comprehensive structured logging in JSON format:
 
 ```
-{"time":"2025-08-03T22:41:20.552941+09:00","level":"INFO","msg":"Loading configuration from configs/example.yaml"}
+{"time":"2025-08-03T22:41:20.552941+09:00","level":"INFO","msg":"Loading configuration from configs/config.yaml"}
 {"time":"2025-08-03T22:41:20.553267+09:00","level":"INFO","msg":"Configuration loaded successfully with 3 nodes"}
 {"time":"2025-08-03T22:41:20.553269+09:00","level":"INFO","msg":"Added node master-1 (master) to cluster"}
 {"time":"2025-08-03T22:41:20.553271+09:00","level":"INFO","msg":"Added node slave-1 (slave) to cluster"}

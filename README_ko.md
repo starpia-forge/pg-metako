@@ -87,12 +87,12 @@ go build -o bin/pg-metako ./cmd/pg-metako
 
 3. 예제 구성으로 실행:
 ```bash
-./bin/pg-metako --config configs/example.yaml
+./bin/pg-metako --config configs/config.yaml
 ```
 
 ### 구성
 
-YAML 구성 파일을 생성하세요 (`configs/example.yaml` 참조):
+YAML 구성 파일을 생성하세요 (`configs/config.yaml` 참조):
 
 ```yaml
 # 데이터베이스 노드 구성
@@ -316,7 +316,7 @@ docker-compose exec postgres-master psql -U postgres -c "SELECT * FROM pg_stat_r
 ./bin/pg-metako [옵션]
 
 옵션:
-  --config string    구성 파일 경로 (기본값 "configs/example.yaml")
+  --config string    구성 파일 경로 (기본값 "configs/config.yaml")
   --version         버전 정보 표시
 ```
 
@@ -342,7 +342,7 @@ docker-compose exec postgres-master psql -U postgres -c "SELECT * FROM pg_stat_r
 애플리케이션은 JSON 형식의 포괄적인 구조화된 로깅을 제공합니다:
 
 ```
-{"time":"2025-08-03T22:41:20.552941+09:00","level":"INFO","msg":"Loading configuration from configs/example.yaml"}
+{"time":"2025-08-03T22:41:20.552941+09:00","level":"INFO","msg":"Loading configuration from configs/config.yaml"}
 {"time":"2025-08-03T22:41:20.553267+09:00","level":"INFO","msg":"Configuration loaded successfully with 3 nodes"}
 {"time":"2025-08-03T22:41:20.553269+09:00","level":"INFO","msg":"Added node master-1 (master) to cluster"}
 {"time":"2025-08-03T22:41:20.553271+09:00","level":"INFO","msg":"Added node slave-1 (slave) to cluster"}
