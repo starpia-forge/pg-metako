@@ -19,6 +19,73 @@ import (
 	"pg-metako/internal/logger"
 )
 
+// Interfaces for dependency injection to improve testability
+
+// ConnectionManager interface abstracts database connection management
+type ConnectionManager interface {
+	Connect(ctx context.Context) error
+	Close() error
+	ExecuteQuery(ctx context.Context, query string, args ...interface{}) (*database.QueryResult, error)
+	IsHealthy(ctx context.Context) bool
+	NodeName() string
+}
+
+// CoordinationAPI interface abstracts cluster coordination
+type CoordinationAPI interface {
+	GetClusterState() coordination.ClusterState
+}
+
+// ConnectionFactory interface abstracts connection creation
+type ConnectionFactory interface {
+	CreateConnection(config config.NodeConfig) (ConnectionManager, error)
+}
+
+// RandomGenerator interface abstracts random number generation
+type RandomGenerator interface {
+	Float64() float64
+	Intn(n int) int
+}
+
+// TimeProvider interface abstracts time operations
+type TimeProvider interface {
+	Now() time.Time
+}
+
+// Logger interface abstracts logging operations
+type Logger interface {
+	Printf(format string, args ...interface{})
+}
+
+// Default implementations
+
+type defaultConnectionFactory struct{}
+
+func (f *defaultConnectionFactory) CreateConnection(config config.NodeConfig) (ConnectionManager, error) {
+	return database.NewConnectionManager(config)
+}
+
+type defaultRandomGenerator struct{}
+
+func (r *defaultRandomGenerator) Float64() float64 {
+	return rand.Float64()
+}
+
+func (r *defaultRandomGenerator) Intn(n int) int {
+	return rand.Intn(n)
+}
+
+type defaultTimeProvider struct{}
+
+func (t *defaultTimeProvider) Now() time.Time {
+	return time.Now()
+}
+
+type defaultLogger struct{}
+
+func (l *defaultLogger) Printf(format string, args ...interface{}) {
+	logger.Printf(format, args...)
+}
+
 // QueryType represents the type of SQL query
 type QueryType int
 
@@ -42,9 +109,15 @@ func (qt QueryType) String() string {
 // Router handles query routing in a distributed pg-metako deployment
 type Router struct {
 	config            *config.Config
-	coordinationAPI   *coordination.CoordinationAPI
-	localConnection   *database.ConnectionManager
-	remoteConnections map[string]*database.ConnectionManager
+	coordinationAPI   CoordinationAPI
+	localConnection   ConnectionManager
+	remoteConnections map[string]ConnectionManager
+
+	// Injected dependencies for testability
+	connectionFactory ConnectionFactory
+	randomGenerator   RandomGenerator
+	timeProvider      TimeProvider
+	logger            Logger
 
 	// Statistics
 	stats *Stats
@@ -67,26 +140,82 @@ type Stats struct {
 	LocalPreference float64          `json:"local_preference_ratio"`
 }
 
-// NewRouter creates a new distributed router
-func NewRouter(cfg *config.Config, coordinationAPI *coordination.CoordinationAPI) (*Router, error) {
-	// Create local connection
-	localConn, err := database.NewConnectionManager(cfg.LocalDB)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create local connection: %w", err)
+// RouterOptions holds optional dependencies for Router creation
+type RouterOptions struct {
+	LocalConnection   ConnectionManager
+	ConnectionFactory ConnectionFactory
+	RandomGenerator   RandomGenerator
+	TimeProvider      TimeProvider
+	Logger            Logger
+}
+
+// NewRouter creates a new distributed router with default dependencies
+func NewRouter(cfg *config.Config, coordinationAPI CoordinationAPI) (*Router, error) {
+	return NewRouterWithOptions(cfg, coordinationAPI, nil)
+}
+
+// NewRouterWithOptions creates a new distributed router with optional dependency injection
+func NewRouterWithOptions(cfg *config.Config, coordinationAPI CoordinationAPI, options *RouterOptions) (*Router, error) {
+	var localConn ConnectionManager
+	var connectionFactory ConnectionFactory
+	var randomGenerator RandomGenerator
+	var timeProvider TimeProvider
+	var logger Logger
+
+	// Use provided dependencies or create defaults
+	if options != nil && options.LocalConnection != nil {
+		localConn = options.LocalConnection
+	} else {
+		// Create local connection using default factory
+		conn, err := database.NewConnectionManager(cfg.LocalDB)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create local connection: %w", err)
+		}
+		localConn = conn
+	}
+
+	if options != nil && options.ConnectionFactory != nil {
+		connectionFactory = options.ConnectionFactory
+	} else {
+		connectionFactory = &defaultConnectionFactory{}
+	}
+
+	if options != nil && options.RandomGenerator != nil {
+		randomGenerator = options.RandomGenerator
+	} else {
+		randomGenerator = &defaultRandomGenerator{}
+	}
+
+	if options != nil && options.TimeProvider != nil {
+		timeProvider = options.TimeProvider
+	} else {
+		timeProvider = &defaultTimeProvider{}
+	}
+
+	if options != nil && options.Logger != nil {
+		logger = options.Logger
+	} else {
+		logger = &defaultLogger{}
 	}
 
 	router := &Router{
 		config:            cfg,
 		coordinationAPI:   coordinationAPI,
 		localConnection:   localConn,
-		remoteConnections: make(map[string]*database.ConnectionManager),
+		remoteConnections: make(map[string]ConnectionManager),
 		connectionCounts:  make(map[string]int64),
+		connectionFactory: connectionFactory,
+		randomGenerator:   randomGenerator,
+		timeProvider:      timeProvider,
+		logger:            logger,
 		stats: &Stats{
 			NodeConnections: make(map[string]int64),
-			LastQueryTime:   time.Now(),
 			LocalPreference: cfg.Coordination.LocalNodePreference,
 		},
 	}
+
+	// Initialize LastQueryTime using the injected timeProvider
+	router.stats.LastQueryTime = router.timeProvider.Now()
 
 	return router, nil
 }
@@ -108,9 +237,9 @@ func (r *Router) RouteQuery(ctx context.Context, query string, args ...interface
 
 	// Update statistics
 	atomic.AddInt64(&r.stats.TotalQueries, 1)
-	r.stats.LastQueryTime = time.Now()
+	r.stats.LastQueryTime = r.timeProvider.Now()
 
-	var targetNode *database.ConnectionManager
+	var targetNode ConnectionManager
 	var isLocal bool
 	var timeout time.Duration
 
@@ -152,25 +281,25 @@ func (r *Router) RouteQuery(ctx context.Context, query string, args ...interface
 }
 
 // selectReadNode selects the best node for read queries with local preference
-func (r *Router) selectReadNode(ctx context.Context) (*database.ConnectionManager, bool) {
+func (r *Router) selectReadNode(ctx context.Context) (ConnectionManager, bool) {
 	// Check if local node is healthy and can handle reads
 	if r.isLocalNodeHealthy(ctx) {
 		// Apply local node preference
-		if rand.Float64() < r.config.Coordination.LocalNodePreference {
-			logger.Printf("Routing read query to local node: %s", r.config.Identity.NodeName)
+		if r.randomGenerator.Float64() < r.config.Coordination.LocalNodePreference {
+			r.logger.Printf("Routing read query to local node: %s", r.config.Identity.NodeName)
 			return r.localConnection, true
 		}
 	}
 
 	// Try to find a healthy remote read node
 	if remoteNode := r.selectRemoteReadNode(ctx); remoteNode != nil {
-		logger.Printf("Routing read query to remote node: %s", remoteNode.NodeName())
+		r.logger.Printf("Routing read query to remote node: %s", remoteNode.NodeName())
 		return remoteNode, false
 	}
 
 	// Fallback to local node if available
 	if r.isLocalNodeHealthy(ctx) {
-		logger.Printf("Fallback: routing read query to local node: %s", r.config.Identity.NodeName)
+		r.logger.Printf("Fallback: routing read query to local node: %s", r.config.Identity.NodeName)
 		return r.localConnection, true
 	}
 
@@ -178,10 +307,10 @@ func (r *Router) selectReadNode(ctx context.Context) (*database.ConnectionManage
 }
 
 // selectWriteNode selects the best node for write queries (must be master)
-func (r *Router) selectWriteNode(ctx context.Context) (*database.ConnectionManager, bool) {
+func (r *Router) selectWriteNode(ctx context.Context) (ConnectionManager, bool) {
 	// Check if local node is master and healthy
 	if r.IsLocalNodeMaster() && r.isLocalNodeHealthy(ctx) {
-		logger.Printf("Routing write query to local master: %s", r.config.Identity.NodeName)
+		r.logger.Printf("Routing write query to local master: %s", r.config.Identity.NodeName)
 		return r.localConnection, true
 	}
 
@@ -195,7 +324,7 @@ func (r *Router) selectWriteNode(ctx context.Context) (*database.ConnectionManag
 
 	// If current master is not local, we need to route to remote master
 	if currentMaster != r.config.Identity.NodeName {
-		logger.Printf("Write query requires routing to remote master: %s", currentMaster)
+		r.logger.Printf("Write query requires routing to remote master: %s", currentMaster)
 		// In a real implementation, we would establish connection to remote master
 		// For now, return nil to indicate remote routing is needed
 		return nil, false
@@ -205,7 +334,7 @@ func (r *Router) selectWriteNode(ctx context.Context) (*database.ConnectionManag
 }
 
 // selectRemoteReadNode selects a healthy remote node for read queries
-func (r *Router) selectRemoteReadNode(ctx context.Context) *database.ConnectionManager {
+func (r *Router) selectRemoteReadNode(ctx context.Context) ConnectionManager {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -225,7 +354,7 @@ func (r *Router) selectRemoteReadNode(ctx context.Context) *database.ConnectionM
 	}
 
 	// Simple round-robin selection for now
-	selectedNode := candidates[rand.Intn(len(candidates))]
+	selectedNode := candidates[r.randomGenerator.Intn(len(candidates))]
 	if conn, exists := r.remoteConnections[selectedNode]; exists {
 		return conn
 	}
@@ -330,7 +459,10 @@ func (r *Router) Close() error {
 
 // GetLocalConnection returns the local database connection
 func (r *Router) GetLocalConnection() *database.ConnectionManager {
-	return r.localConnection
+	if conn, ok := r.localConnection.(*database.ConnectionManager); ok {
+		return conn
+	}
+	return nil
 }
 
 // IsLocalNodeMaster checks if the local node is currently the master
@@ -352,14 +484,26 @@ func (r *Router) GetClusterState() coordination.ClusterState {
 func (r *Router) SelectReadNode() *database.ConnectionManager {
 	ctx := context.Background()
 	node, _ := r.selectReadNode(ctx)
-	return node
+	if node == nil {
+		return nil
+	}
+	if conn, ok := node.(*database.ConnectionManager); ok {
+		return conn
+	}
+	return nil
 }
 
 // SelectWriteNode provides compatibility with the old QueryRouter interface
 func (r *Router) SelectWriteNode() *database.ConnectionManager {
 	ctx := context.Background()
 	node, _ := r.selectWriteNode(ctx)
-	return node
+	if node == nil {
+		return nil
+	}
+	if conn, ok := node.(*database.ConnectionManager); ok {
+		return conn
+	}
+	return nil
 }
 
 // GetConnectionStats provides compatibility with the old QueryRouter interface
@@ -379,5 +523,5 @@ func (r *Router) ResetStats() {
 	r.stats.WriteQueries = 0
 	r.stats.FailedQueries = 0
 	r.stats.NodeConnections = make(map[string]int64)
-	r.stats.LastQueryTime = time.Now()
+	r.stats.LastQueryTime = r.timeProvider.Now()
 }
