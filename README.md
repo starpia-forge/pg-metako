@@ -7,27 +7,30 @@
 
 # pg-metako
 
-A high-availability PostgreSQL replication management system written in Go.
+A distributed, high-availability PostgreSQL cluster management system written in Go.
 
 ## Overview
 
-pg-metako is a robust PostgreSQL replication management system that provides:
+pg-metako is a distributed PostgreSQL cluster management system that provides:
 
-- **High Availability**: Automatic failover when master nodes fail
-- **Load Balancing**: Intelligent query routing with multiple algorithms
-- **Health Monitoring**: Continuous health checks with configurable thresholds
-- **Scalability**: Support for N-node replication setups
-- **Observability**: Comprehensive logging and metrics
+- **Distributed Architecture**: Each PostgreSQL node runs its own pg-metako instance for true distributed coordination
+- **High Availability**: Automatic failover with distributed consensus and coordination
+- **Intelligent Routing**: Query routing with local node preference and load balancing
+- **Health Monitoring**: Continuous health checks with configurable thresholds across the cluster
+- **Scalability**: Support for N-node distributed PostgreSQL clusters
+- **Coordination**: Inter-node communication and consensus for failover decisions
+- **Observability**: Comprehensive logging and metrics across all nodes
 
 ## Features
 
 ### Core Functionality
-- ✅ N-node PostgreSQL replication support (minimum 2 nodes)
-- ✅ Master-Slave architecture with automatic promotion
-- ✅ Continuous health checking with configurable intervals
-- ✅ Automatic failover with configurable failure thresholds
-- ✅ Query routing (writes to master, reads to slaves)
+- ✅ Distributed PostgreSQL cluster management (minimum 2 nodes)
+- ✅ Master-Slave architecture with distributed consensus for promotion
+- ✅ Continuous health checking across all cluster nodes
+- ✅ Automatic failover with distributed coordination and consensus
+- ✅ Intelligent query routing with local node preference
 - ✅ Load balancing algorithms (Round-Robin, Least Connections)
+- ✅ Inter-node communication and coordination API
 
 ### Configuration Management
 - ✅ YAML configuration files
@@ -92,26 +95,46 @@ go build -o bin/pg-metako ./cmd/pg-metako
 
 ### Configuration
 
-Create a YAML configuration file (see `configs/config.yaml`):
+Create a YAML configuration file for distributed deployment:
 
 ```yaml
-# Database nodes configuration
-nodes:
-  - name: "master-1"
-    host: "localhost"
-    port: 5432
-    role: "master"
-    username: "postgres"
-    password: "password"
-    database: "myapp"
-  
-  - name: "slave-1"
-    host: "localhost"
-    port: 5433
+# Node identity - identifies this pg-metako instance
+identity:
+  node_name: "pg-metako-node1"    # Unique name for this node
+  local_db_host: "localhost"      # Host of local PostgreSQL instance
+  local_db_port: 5432            # Port of local PostgreSQL instance
+  api_host: "0.0.0.0"            # Host for inter-node API
+  api_port: 8080                 # Port for inter-node API
+
+# Local PostgreSQL database configuration
+local_db:
+  name: "postgres-node1"
+  host: "localhost"
+  port: 5432
+  role: "master"                 # Role of local PostgreSQL instance
+  username: "postgres"
+  password: "password"
+  database: "myapp"
+
+# Other pg-metako nodes in the cluster
+cluster_members:
+  - node_name: "pg-metako-node2"
+    api_host: "192.168.1.102"
+    api_port: 8080
     role: "slave"
-    username: "postgres"
-    password: "password"
-    database: "myapp"
+  
+  - node_name: "pg-metako-node3"
+    api_host: "192.168.1.103"
+    api_port: 8080
+    role: "slave"
+
+# Coordination settings for distributed consensus
+coordination:
+  heartbeat_interval: "10s"        # Heartbeat interval for cluster membership
+  communication_timeout: "5s"     # Timeout for inter-node communication
+  failover_timeout: "30s"         # Failover coordination timeout
+  min_consensus_nodes: 2          # Minimum nodes required for failover consensus
+  local_node_preference: 0.8      # Local node preference weight (0.0 to 1.0)
 
 # Health check configuration
 health_check:
@@ -134,13 +157,25 @@ security:
 
 ## Architecture
 
+### Distributed Architecture
+
+pg-metako uses a distributed architecture where each PostgreSQL node runs its own pg-metako instance. This provides true distributed coordination and eliminates single points of failure.
+
 ### Components
 
-1. **Configuration Manager**: Loads and validates YAML configuration
-2. **Database Connection Manager**: Manages PostgreSQL connections
-3. **Health Checker**: Monitors node health with configurable intervals
-4. **Replication Manager**: Handles failover and slave promotion
-5. **Query Router**: Routes queries based on type and load balancing
+1. **Configuration Manager**: Loads and validates distributed YAML configuration
+2. **Local Database Connection Manager**: Manages connection to the local PostgreSQL instance
+3. **Health Checker**: Monitors health of all cluster nodes with configurable intervals
+4. **Distributed Replication Manager**: Handles failover coordination and consensus across nodes
+5. **Coordination API**: Provides inter-node communication and cluster membership management
+6. **Unified Router**: Routes queries with local node preference and intelligent load balancing
+
+### Distributed Coordination
+
+- **Cluster Membership**: Each node maintains awareness of all other pg-metako nodes
+- **Heartbeat System**: Regular heartbeats ensure cluster health and detect node failures
+- **Consensus Protocol**: Distributed consensus for failover decisions and master promotion
+- **Local Node Preference**: Queries are preferentially routed to local PostgreSQL instances when possible
 
 ### Query Routing
 
@@ -154,159 +189,45 @@ security:
 1. **Round-Robin**: Distributes queries evenly across all healthy slaves
 2. **Least Connected**: Routes to the slave with the fewest active connections
 
-### Failover Process
+### Distributed Failover Process
 
-1. Health checker detects master failure (consecutive failures exceed threshold)
-2. Replication manager selects a healthy slave for promotion
-3. Slave is promoted to master (PostgreSQL promotion commands)
-4. Remaining slaves are reconfigured to follow the new master
-5. Query router updates routing to use the new master
+1. **Failure Detection**: Multiple pg-metako nodes detect master failure through health checks
+2. **Consensus Initiation**: Nodes communicate to reach consensus on master failure
+3. **Leader Election**: Distributed consensus selects the best candidate for promotion based on:
+   - PostgreSQL replication lag
+   - Node health and availability
+   - Local node preference weights
+4. **Coordinated Promotion**: The selected node promotes its local PostgreSQL instance to master
+5. **Cluster Reconfiguration**: All nodes update their routing to use the new master
+6. **Replication Restart**: Remaining slaves are reconfigured to follow the new master
+7. **State Synchronization**: Cluster state is synchronized across all pg-metako nodes
 
-## Docker Deployment
+## Deployment
 
-### Overview
+pg-metako supports two deployment models:
 
-pg-metako provides a complete Docker-based deployment solution with:
-- PostgreSQL master and slave containers with automatic replication setup
-- pg-metako application container
-- Optional pgAdmin for database management
-- Persistent data volumes
-- Easy configuration through environment variables
+1. **Docker Deployment (Development/Testing)**: Quick setup using Docker Compose
+2. **Distributed Deployment (Production)**: Each PostgreSQL node runs its own pg-metako instance
 
 ### Quick Docker Setup
 
-1. **Setup environment**:
-```bash
-./scripts/deploy.sh setup
-```
+For development and testing, use Docker Compose:
 
-2. **Edit configuration** (optional):
 ```bash
-# Edit .env file to customize passwords and ports
-nano .env
-```
-
-3. **Start all services**:
-```bash
+# Setup and start all services
 ./scripts/deploy.sh start
-```
 
-4. **Check status**:
-```bash
+# Check status
 ./scripts/deploy.sh status
 ```
 
-### Docker Services
+📖 **For detailed Docker deployment instructions, see [Docker Deployment Guide](docs/docker-deployment.md)**
 
-The Docker Compose setup includes:
+### Production Deployment
 
-- **postgres-master**: PostgreSQL master database (port 5432)
-- **postgres-slave1**: PostgreSQL slave database (port 5433)
-- **postgres-slave2**: PostgreSQL slave database (port 5434)
-- **pg-metako**: Main application container (port 8080)
-- **pgadmin**: Database management interface (port 8081, optional)
+For production environments, deploy pg-metako in distributed mode where each PostgreSQL node runs its own pg-metako instance for true high availability.
 
-### Environment Configuration
-
-Copy `.env.example` to `.env` and customize:
-
-```bash
-# PostgreSQL Configuration
-POSTGRES_DB=myapp
-POSTGRES_USER=postgres
-POSTGRES_PASSWORD=your_secure_password
-
-# Replication Configuration
-POSTGRES_REPLICATION_USER=replicator
-POSTGRES_REPLICATION_PASSWORD=your_replication_password
-
-# Port Configuration
-POSTGRES_MASTER_PORT=5432
-POSTGRES_SLAVE1_PORT=5433
-POSTGRES_SLAVE2_PORT=5434
-PG_METAKO_PORT=8080
-```
-
-### Deployment Script Commands
-
-The `scripts/deploy.sh` script provides easy management:
-
-```bash
-# Setup environment file
-./scripts/deploy.sh setup
-
-# Start all services
-./scripts/deploy.sh start
-
-# Stop all services
-./scripts/deploy.sh stop
-
-# Restart services
-./scripts/deploy.sh restart
-
-# Show service status
-./scripts/deploy.sh status
-
-# Show logs (all services)
-./scripts/deploy.sh logs
-
-# Show logs for specific service
-./scripts/deploy.sh logs pg-metako
-
-# Start with pgAdmin
-./scripts/deploy.sh admin
-
-# Clean up all containers and volumes
-./scripts/deploy.sh cleanup
-```
-
-### Data Persistence
-
-Docker volumes ensure data persistence:
-- `postgres_master_data`: Master database data
-- `postgres_slave1_data`: Slave 1 database data
-- `postgres_slave2_data`: Slave 2 database data
-- `pg_metako_logs`: Application logs
-- `pgadmin_data`: pgAdmin configuration
-
-### Accessing Services
-
-Once deployed, services are available at:
-- **PostgreSQL Master**: `localhost:5432`
-- **PostgreSQL Slave 1**: `localhost:5433`
-- **PostgreSQL Slave 2**: `localhost:5434`
-- **pg-metako Application**: `localhost:8080`
-- **pgAdmin** (if enabled): `http://localhost:8081`
-
-### Docker Troubleshooting
-
-**Services won't start**:
-```bash
-# Check Docker is running
-docker info
-
-# Check service logs
-./scripts/deploy.sh logs
-
-# Restart services
-./scripts/deploy.sh restart
-```
-
-**Database connection issues**:
-```bash
-# Check PostgreSQL master status
-docker-compose exec postgres-master pg_isready -U postgres
-
-# Check replication status
-docker-compose exec postgres-master psql -U postgres -c "SELECT * FROM pg_stat_replication;"
-```
-
-**Reset everything**:
-```bash
-# Clean up and start fresh
-./scripts/deploy.sh cleanup
-./scripts/deploy.sh start
-```
+📖 **For detailed production deployment instructions, see [Distributed Deployment Guide](docs/distributed-deployment.md)**
 
 ## Usage
 
@@ -359,134 +280,32 @@ Periodic status reports include:
 
 ## Development
 
-### Project Structure
-
-The project follows the [golang-standards/project-layout](https://github.com/golang-standards/project-layout):
-
-```
-├── cmd/pg-metako/          # Main application
-├── internal/               # Private application packages
-│   ├── config/            # Configuration management
-│   ├── database/          # Database connection handling
-│   ├── health/            # Health checking
-│   ├── metako/            # Main application orchestration
-│   ├── replication/       # Replication and failover
-│   └── routing/           # Query routing and load balancing
-├── configs/               # Configuration examples
-├── docs/                  # Documentation
-├── bin/                   # Compiled binaries
-├── go.mod                 # Go module definition
-├── go.sum                 # Go module checksums
-└── README.md              # Project documentation
-```
-
-### Makefile
-
-The project includes a comprehensive Makefile for build automation. View all available targets:
+### Quick Start
 
 ```bash
-make help
-```
+# Build the application
+make build
 
-#### Common Commands
-
-**Build and Test:**
-```bash
-make build          # Build the application
-make test           # Run all tests
-make test-coverage  # Run tests with coverage report
-make check          # Run format, vet, and tests
-```
-
-**Development:**
-```bash
-make setup          # Setup development environment
-make dev-setup      # Setup with additional development tools
-make fmt            # Format Go code
-make vet            # Run go vet
-make lint           # Run linter (requires golangci-lint)
-```
-
-**Docker:**
-```bash
-make docker-build   # Build Docker image
-make docker-run     # Run Docker container
-make docker-compose-up    # Start services with Docker Compose
-make docker-compose-down  # Stop services with Docker Compose
-```
-
-**Cross-platform Builds:**
-```bash
-make build-all      # Build for all platforms
-make build-linux    # Build for Linux
-make build-windows  # Build for Windows
-make build-darwin   # Build for macOS
-```
-
-**Release and Cleanup:**
-```bash
-make release        # Create release build
-make clean          # Clean build artifacts
-make ci             # Run CI pipeline
-```
-
-### Testing
-
-Run all tests:
-```bash
-# Using Makefile (recommended)
+# Run tests
 make test
 
-# Or using Go directly
-go test ./...
+# Run with example configuration
+./bin/pg-metako --config configs/config.yaml
 ```
 
-Run tests with verbose output:
-```bash
-# Using Makefile
-make test-verbose
-
-# Or using Go directly
-go test -v ./...
-```
-
-Run tests for a specific package:
-```bash
-go test -v ./internal/config
-```
+📖 **For detailed development setup, project structure, testing, and contribution guidelines, see [Development Guide](docs/development.md)**
 
 ## PostgreSQL Setup
 
-### Master Configuration
+For PostgreSQL master-slave replication configuration:
 
-Add to `postgresql.conf`:
-```
-wal_level = replica
-max_wal_senders = 3
-wal_keep_segments = 64
-```
-
-Add to `pg_hba.conf`:
-```
-host replication replicator 0.0.0.0/0 md5
-```
-
-### Slave Configuration
-
-Create `recovery.conf`:
-```
-standby_mode = 'on'
-primary_conninfo = 'host=master_ip port=5432 user=replicator'
-```
+📖 **For detailed PostgreSQL setup instructions, see [PostgreSQL Setup Guide](docs/postgresql-setup.md)**
 
 ## Troubleshooting
 
-### Common Issues
+For common issues and solutions:
 
-1. **Connection refused**: Check PostgreSQL is running and accessible
-2. **Authentication failed**: Verify username/password in configuration
-3. **No healthy slaves**: Check slave node connectivity and replication status
-4. **Failover not working**: Verify failure threshold and health check settings
+📖 **For comprehensive troubleshooting information, see [Troubleshooting Guide](docs/troubleshooting.md)**
 
 ## License
 
