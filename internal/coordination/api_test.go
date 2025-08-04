@@ -283,7 +283,8 @@ func TestCoordinationAPI_ProposeFailover(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := api.ProposeFailover(tt.failedNode, tt.newMasterNode)
+			ctx := context.Background()
+			err := api.ProposeFailover(ctx, tt.failedNode, tt.newMasterNode)
 
 			if tt.expectError && err == nil {
 				t.Error("Expected error but got nil")

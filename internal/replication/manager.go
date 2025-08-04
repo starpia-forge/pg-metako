@@ -113,7 +113,7 @@ func (dm *Manager) IsLocalNodeMaster() bool {
 }
 
 // ProposeFailover proposes a failover to the cluster
-func (dm *Manager) ProposeFailover(failedNode, newMasterNode string) error {
+func (dm *Manager) ProposeFailover(ctx context.Context, failedNode, newMasterNode string) error {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
@@ -141,13 +141,13 @@ func (dm *Manager) ProposeFailover(failedNode, newMasterNode string) error {
 	logger.Printf("Proposed failover: %s -> %s (proposal: %s)", failedNode, newMasterNode, proposalID)
 
 	// Send proposal to coordination API
-	if err := dm.coordinationAPI.ProposeFailover(failedNode, newMasterNode); err != nil {
+	if err := dm.coordinationAPI.ProposeFailover(ctx, failedNode, newMasterNode); err != nil {
 		logger.Printf("Failed to send failover proposal: %v", err)
 		return err
 	}
 
 	// Start monitoring this proposal
-	go dm.monitorProposal(proposalID)
+	go dm.monitorProposal(ctx, proposalID)
 
 	return nil
 }
@@ -249,13 +249,13 @@ func (dm *Manager) monitoringRoutine(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			dm.checkClusterHealth()
+			dm.checkClusterHealth(ctx)
 		}
 	}
 }
 
 // checkClusterHealth checks the health of cluster members and triggers failover if needed
-func (dm *Manager) checkClusterHealth() {
+func (dm *Manager) checkClusterHealth(ctx context.Context) {
 	clusterState := dm.coordinationAPI.GetClusterState()
 
 	// Check if current master is healthy
@@ -267,7 +267,7 @@ func (dm *Manager) checkClusterHealth() {
 				// Select new master
 				newMaster := dm.selectNewMaster(clusterState, dm.currentMaster)
 				if newMaster != "" {
-					if err := dm.ProposeFailover(dm.currentMaster, newMaster); err != nil {
+					if err := dm.ProposeFailover(ctx, dm.currentMaster, newMaster); err != nil {
 						logger.Printf("Failed to propose failover: %v", err)
 					}
 				} else {
@@ -280,7 +280,7 @@ func (dm *Manager) checkClusterHealth() {
 		newMaster := dm.selectNewMaster(clusterState, "")
 		if newMaster != "" {
 			logger.Printf("No current master, proposing %s as master", newMaster)
-			if err := dm.ProposeFailover("", newMaster); err != nil {
+			if err := dm.ProposeFailover(ctx, "", newMaster); err != nil {
 				logger.Printf("Failed to propose initial master: %v", err)
 			}
 		}
@@ -336,12 +336,14 @@ func (dm *Manager) updateCurrentMaster() {
 }
 
 // monitorProposal monitors a specific failover proposal
-func (dm *Manager) monitorProposal(proposalID string) {
+func (dm *Manager) monitorProposal(ctx context.Context, proposalID string) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
 			dm.mu.RLock()
 			proposal, exists := dm.activeProposals[proposalID]

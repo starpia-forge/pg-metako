@@ -105,9 +105,21 @@ func NewCoordinationAPI(cfg *config.Config) *CoordinationAPI {
 func (api *CoordinationAPI) Start(ctx context.Context) error {
 	logger.Printf("Starting coordination API on %s", api.httpServer.Addr)
 
+	// Start HTTP server in a goroutine that respects context
 	go func() {
 		if err := api.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Printf("Coordination API server error: %v", err)
+		}
+	}()
+
+	// Monitor context cancellation to shutdown server
+	go func() {
+		<-ctx.Done()
+		logger.Printf("Shutting down coordination API server due to context cancellation")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := api.httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Printf("Error shutting down coordination API server: %v", err)
 		}
 	}()
 
@@ -136,7 +148,7 @@ func (api *CoordinationAPI) GetClusterState() ClusterState {
 }
 
 // ProposeFailover proposes a failover to the cluster
-func (api *CoordinationAPI) ProposeFailover(failedNode, newMasterNode string) error {
+func (api *CoordinationAPI) ProposeFailover(ctx context.Context, failedNode, newMasterNode string) error {
 	proposal := FailoverProposal{
 		ProposerNode:  api.config.Identity.NodeName,
 		FailedNode:    failedNode,
@@ -152,8 +164,13 @@ func (api *CoordinationAPI) ProposeFailover(failedNode, newMasterNode string) er
 		}
 
 		go func(member config.ClusterMember) {
-			if err := api.sendFailoverProposal(member, proposal); err != nil {
-				logger.Printf("Failed to send failover proposal to %s: %v", member.NodeName, err)
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if err := api.sendFailoverProposal(member, proposal); err != nil {
+					logger.Printf("Failed to send failover proposal to %s: %v", member.NodeName, err)
+				}
 			}
 		}(member)
 	}
@@ -171,26 +188,31 @@ func (api *CoordinationAPI) heartbeatRoutine(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			api.sendHeartbeats()
+			api.sendHeartbeats(ctx)
 		}
 	}
 }
 
 // sendHeartbeats sends heartbeat to all cluster members
-func (api *CoordinationAPI) sendHeartbeats() {
+func (api *CoordinationAPI) sendHeartbeats(ctx context.Context) {
 	for _, member := range api.config.ClusterMembers {
 		if member.NodeName == api.config.Identity.NodeName {
 			continue // Skip self
 		}
 
 		go func(member config.ClusterMember) {
-			if err := api.sendHeartbeat(member); err != nil {
-				logger.Printf("Failed to send heartbeat to %s: %v", member.NodeName, err)
-				// Mark node as potentially unhealthy
-				api.markNodeUnhealthy(member.NodeName)
-			} else {
-				// Mark node as healthy
-				api.markNodeHealthy(member.NodeName)
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				if err := api.sendHeartbeat(member); err != nil {
+					logger.Printf("Failed to send heartbeat to %s: %v", member.NodeName, err)
+					// Mark node as potentially unhealthy
+					api.markNodeUnhealthy(member.NodeName)
+				} else {
+					// Mark node as healthy
+					api.markNodeHealthy(member.NodeName)
+				}
 			}
 		}(member)
 	}

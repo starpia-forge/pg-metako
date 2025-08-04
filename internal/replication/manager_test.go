@@ -160,7 +160,8 @@ func TestManager_ProposeFailover(t *testing.T) {
 				manager.mu.Unlock()
 			}
 
-			err := manager.ProposeFailover(tt.failedNode, tt.newMasterNode)
+			ctx := context.Background()
+			err := manager.ProposeFailover(ctx, tt.failedNode, tt.newMasterNode)
 
 			if tt.expectError && err == nil {
 				t.Error("Expected error but got nil")
