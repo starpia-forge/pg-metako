@@ -9,21 +9,38 @@ import (
 func TestLoadConfigFromYAML(t *testing.T) {
 	// Create a temporary YAML config file
 	yamlContent := `
-nodes:
-  - name: "master-1"
-    host: "localhost"
-    port: 5432
+identity:
+  node_name: "test-node"
+  local_db_host: "localhost"
+  local_db_port: 5432
+  api_host: "localhost"
+  api_port: 8080
+
+local_db:
+  name: "test-db"
+  host: "localhost"
+  port: 5432
+  role: "master"
+  username: "postgres"
+  password: "password"
+  database: "testdb"
+
+cluster_members:
+  - node_name: "test-node"
+    api_host: "localhost"
+    api_port: 8080
     role: "master"
-    username: "postgres"
-    password: "password"
-    database: "testdb"
-  - name: "slave-1"
-    host: "localhost"
-    port: 5433
+  - node_name: "slave-node"
+    api_host: "localhost"
+    api_port: 8081
     role: "slave"
-    username: "postgres"
-    password: "password"
-    database: "testdb"
+
+coordination:
+  heartbeat_interval: "10s"
+  communication_timeout: "5s"
+  failover_timeout: "30s"
+  min_consensus_nodes: 1
+  local_node_preference: 0.8
 
 health_check:
   interval: "30s"
@@ -60,16 +77,24 @@ security:
 	}
 
 	// Verify configuration values
-	if len(config.Nodes) != 2 {
-		t.Errorf("Expected 2 nodes, got %d", len(config.Nodes))
+	if len(config.ClusterMembers) != 2 {
+		t.Errorf("Expected 2 cluster members, got %d", len(config.ClusterMembers))
 	}
 
-	if config.Nodes[0].Name != "master-1" {
-		t.Errorf("Expected first node name to be 'master-1', got '%s'", config.Nodes[0].Name)
+	if config.Identity.NodeName != "test-node" {
+		t.Errorf("Expected node name to be 'test-node', got '%s'", config.Identity.NodeName)
 	}
 
-	if config.Nodes[0].Role != RoleMaster {
-		t.Errorf("Expected first node role to be master, got %s", config.Nodes[0].Role)
+	if config.LocalDB.Role != RoleMaster {
+		t.Errorf("Expected local DB role to be master, got %s", config.LocalDB.Role)
+	}
+
+	if config.ClusterMembers[0].NodeName != "test-node" {
+		t.Errorf("Expected first cluster member name to be 'test-node', got '%s'", config.ClusterMembers[0].NodeName)
+	}
+
+	if config.Coordination.LocalNodePreference != 0.8 {
+		t.Errorf("Expected local node preference to be 0.8, got %f", config.Coordination.LocalNodePreference)
 	}
 
 	if config.HealthCheck.Interval != 30*time.Second {
@@ -94,16 +119,36 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "valid config",
 			config: &Config{
-				Nodes: []NodeConfig{
+				Identity: NodeIdentity{
+					NodeName:    "test-node",
+					LocalDBHost: "localhost",
+					LocalDBPort: 5432,
+					APIHost:     "localhost",
+					APIPort:     8080,
+				},
+				LocalDB: NodeConfig{
+					Name:     "test-db",
+					Host:     "localhost",
+					Port:     5432,
+					Role:     RoleMaster,
+					Username: "postgres",
+					Password: "password",
+					Database: "testdb",
+				},
+				ClusterMembers: []ClusterMember{
 					{
-						Name:     "master-1",
-						Host:     "localhost",
-						Port:     5432,
+						NodeName: "test-node",
+						APIHost:  "localhost",
+						APIPort:  8080,
 						Role:     RoleMaster,
-						Username: "postgres",
-						Password: "password",
-						Database: "testdb",
 					},
+				},
+				Coordination: CoordinationConfig{
+					HeartbeatInterval:    10 * time.Second,
+					CommunicationTimeout: 5 * time.Second,
+					FailoverTimeout:      30 * time.Second,
+					MinConsensusNodes:    1,
+					LocalNodePreference:  0.8,
 				},
 				HealthCheck: HealthCheckConfig{
 					Interval:         30 * time.Second,
@@ -114,26 +159,69 @@ func TestValidateConfig(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "no master node",
+			name: "invalid node identity",
 			config: &Config{
-				Nodes: []NodeConfig{
+				Identity: NodeIdentity{
+					NodeName:    "", // Empty node name should cause error
+					LocalDBHost: "localhost",
+					LocalDBPort: 5432,
+					APIHost:     "localhost",
+					APIPort:     8080,
+				},
+				LocalDB: NodeConfig{
+					Name:     "test-db",
+					Host:     "localhost",
+					Port:     5432,
+					Role:     RoleMaster,
+					Username: "postgres",
+					Password: "password",
+					Database: "testdb",
+				},
+				ClusterMembers: []ClusterMember{
 					{
-						Name:     "slave-1",
-						Host:     "localhost",
-						Port:     5432,
-						Role:     RoleSlave,
-						Username: "postgres",
-						Password: "password",
-						Database: "testdb",
+						NodeName: "test-node",
+						APIHost:  "localhost",
+						APIPort:  8080,
+						Role:     RoleMaster,
 					},
+				},
+				Coordination: CoordinationConfig{
+					HeartbeatInterval:    10 * time.Second,
+					CommunicationTimeout: 5 * time.Second,
+					FailoverTimeout:      30 * time.Second,
+					MinConsensusNodes:    1,
+					LocalNodePreference:  0.8,
 				},
 			},
 			expectError: true,
 		},
 		{
-			name: "empty nodes",
+			name: "empty cluster members",
 			config: &Config{
-				Nodes: []NodeConfig{},
+				Identity: NodeIdentity{
+					NodeName:    "test-node",
+					LocalDBHost: "localhost",
+					LocalDBPort: 5432,
+					APIHost:     "localhost",
+					APIPort:     8080,
+				},
+				LocalDB: NodeConfig{
+					Name:     "test-db",
+					Host:     "localhost",
+					Port:     5432,
+					Role:     RoleMaster,
+					Username: "postgres",
+					Password: "password",
+					Database: "testdb",
+				},
+				ClusterMembers: []ClusterMember{}, // Empty cluster members should cause error
+				Coordination: CoordinationConfig{
+					HeartbeatInterval:    10 * time.Second,
+					CommunicationTimeout: 5 * time.Second,
+					FailoverTimeout:      30 * time.Second,
+					MinConsensusNodes:    1,
+					LocalNodePreference:  0.8,
+				},
 			},
 			expectError: true,
 		},

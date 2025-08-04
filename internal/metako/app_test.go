@@ -15,16 +15,36 @@ import (
 func TestNewApplication(t *testing.T) {
 	// Test configuration with minimal valid setup
 	cfg := &config.Config{
-		Nodes: []config.NodeConfig{
+		Identity: config.NodeIdentity{
+			NodeName:    "test-node",
+			LocalDBHost: "localhost",
+			LocalDBPort: 5432,
+			APIHost:     "localhost",
+			APIPort:     8080,
+		},
+		LocalDB: config.NodeConfig{
+			Name:     "master-1",
+			Host:     "localhost",
+			Port:     5432,
+			Role:     config.RoleMaster,
+			Username: "postgres",
+			Password: "password",
+			Database: "testdb",
+		},
+		ClusterMembers: []config.ClusterMember{
 			{
-				Name:     "master-1",
-				Host:     "localhost",
-				Port:     5432,
+				NodeName: "test-node",
+				APIHost:  "localhost",
+				APIPort:  8080,
 				Role:     config.RoleMaster,
-				Username: "postgres",
-				Password: "password",
-				Database: "testdb",
 			},
+		},
+		Coordination: config.CoordinationConfig{
+			HeartbeatInterval:    10 * time.Second,
+			CommunicationTimeout: 5 * time.Second,
+			FailoverTimeout:      30 * time.Second,
+			MinConsensusNodes:    1,
+			LocalNodePreference:  0.8,
 		},
 		HealthCheck: config.HealthCheckConfig{
 			Interval:         30 * time.Second,
@@ -48,31 +68,51 @@ func TestNewApplication(t *testing.T) {
 	}
 
 	// Verify that all components are initialized
-	if app.GetQueryRouter() == nil {
-		t.Error("QueryRouter should be initialized")
+	if app.GetRouter() == nil {
+		t.Error("Router should be initialized")
 	}
 
 	if app.GetReplicationManager() == nil {
 		t.Error("ReplicationManager should be initialized")
 	}
 
-	if app.GetHealthChecker() == nil {
-		t.Error("HealthChecker should be initialized")
+	if app.GetCoordinationAPI() == nil {
+		t.Error("CoordinationAPI should be initialized")
 	}
 }
 
 func TestApplication_StartStop(t *testing.T) {
 	cfg := &config.Config{
-		Nodes: []config.NodeConfig{
+		Identity: config.NodeIdentity{
+			NodeName:    "test-node",
+			LocalDBHost: "localhost",
+			LocalDBPort: 5432,
+			APIHost:     "localhost",
+			APIPort:     8080,
+		},
+		LocalDB: config.NodeConfig{
+			Name:     "master-1",
+			Host:     "localhost",
+			Port:     5432,
+			Role:     config.RoleMaster,
+			Username: "postgres",
+			Password: "password",
+			Database: "testdb",
+		},
+		ClusterMembers: []config.ClusterMember{
 			{
-				Name:     "master-1",
-				Host:     "localhost",
-				Port:     5432,
+				NodeName: "test-node",
+				APIHost:  "localhost",
+				APIPort:  8080,
 				Role:     config.RoleMaster,
-				Username: "postgres",
-				Password: "password",
-				Database: "testdb",
 			},
+		},
+		Coordination: config.CoordinationConfig{
+			HeartbeatInterval:    10 * time.Second,
+			CommunicationTimeout: 5 * time.Second,
+			FailoverTimeout:      30 * time.Second,
+			MinConsensusNodes:    1,
+			LocalNodePreference:  0.8,
 		},
 		HealthCheck: config.HealthCheckConfig{
 			Interval:         30 * time.Second,
@@ -112,16 +152,36 @@ func TestApplication_StartStop(t *testing.T) {
 
 func TestApplication_Run(t *testing.T) {
 	cfg := &config.Config{
-		Nodes: []config.NodeConfig{
+		Identity: config.NodeIdentity{
+			NodeName:    "test-node",
+			LocalDBHost: "localhost",
+			LocalDBPort: 5432,
+			APIHost:     "localhost",
+			APIPort:     8080,
+		},
+		LocalDB: config.NodeConfig{
+			Name:     "master-1",
+			Host:     "localhost",
+			Port:     5432,
+			Role:     config.RoleMaster,
+			Username: "postgres",
+			Password: "password",
+			Database: "testdb",
+		},
+		ClusterMembers: []config.ClusterMember{
 			{
-				Name:     "master-1",
-				Host:     "localhost",
-				Port:     5432,
+				NodeName: "test-node",
+				APIHost:  "localhost",
+				APIPort:  8080,
 				Role:     config.RoleMaster,
-				Username: "postgres",
-				Password: "password",
-				Database: "testdb",
 			},
+		},
+		Coordination: config.CoordinationConfig{
+			HeartbeatInterval:    10 * time.Second,
+			CommunicationTimeout: 5 * time.Second,
+			FailoverTimeout:      30 * time.Second,
+			MinConsensusNodes:    1,
+			LocalNodePreference:  0.8,
 		},
 		HealthCheck: config.HealthCheckConfig{
 			Interval:         100 * time.Millisecond, // Short for testing
@@ -140,21 +200,50 @@ func TestApplication_Run(t *testing.T) {
 		t.Fatalf("Failed to create application: %v", err)
 	}
 
-	// Test Run with short timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	// Test Run - it doesn't take context parameter in the new version
+	// We'll test it in a goroutine with a timeout
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run()
+	}()
 
-	// Run should handle context cancellation gracefully
-	err = app.Run(ctx)
-	if err != nil && err != context.DeadlineExceeded {
+	// Give it a short time to start, then we can't easily stop it in tests
+	// so we'll just verify it can be created and started
+	select {
+	case err := <-done:
 		t.Logf("Run completed with result: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		t.Log("Run started successfully (test timeout)")
 	}
 }
 
 func TestApplication_InvalidConfig(t *testing.T) {
-	// Test with invalid configuration (no nodes)
+	// Test with invalid configuration (no cluster members)
 	cfg := &config.Config{
-		Nodes: []config.NodeConfig{},
+		Identity: config.NodeIdentity{
+			NodeName:    "test-node",
+			LocalDBHost: "localhost",
+			LocalDBPort: 5432,
+			APIHost:     "localhost",
+			APIPort:     8080,
+		},
+		LocalDB: config.NodeConfig{
+			Name:     "master-1",
+			Host:     "localhost",
+			Port:     5432,
+			Role:     config.RoleMaster,
+			Username: "postgres",
+			Password: "password",
+			Database: "testdb",
+		},
+		ClusterMembers: []config.ClusterMember{}, // Empty cluster members should cause error
+		Coordination: config.CoordinationConfig{
+			HeartbeatInterval:    10 * time.Second,
+			CommunicationTimeout: 5 * time.Second,
+			FailoverTimeout:      30 * time.Second,
+			MinConsensusNodes:    1,
+			LocalNodePreference:  0.8,
+		},
 	}
 
 	_, err := NewApplication(cfg)

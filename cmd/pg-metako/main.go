@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -37,7 +36,8 @@ func main() {
 		logger.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	logger.Printf("Configuration loaded successfully with %d nodes", len(cfg.Nodes))
+	logger.Printf("Configuration loaded successfully for node: %s", cfg.Identity.NodeName)
+	logger.Printf("Cluster members: %d", len(cfg.ClusterMembers))
 
 	// Create and run application
 	app, err := metako.NewApplication(cfg)
@@ -46,8 +46,7 @@ func main() {
 	}
 
 	// Run the application with signal handling
-	ctx := context.Background()
-	if err := app.Run(ctx); err != nil {
+	if err := app.Run(); err != nil {
 		logger.Fatalf("Application error: %v", err)
 	}
 }
