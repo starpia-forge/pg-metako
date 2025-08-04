@@ -54,7 +54,7 @@ type ClusterState struct {
 
 // CoordinationAPI handles inter-node communication
 type CoordinationAPI struct {
-	config     *config.DistributedConfig
+	config     *config.Config
 	httpServer *http.Server
 	client     *http.Client
 
@@ -66,7 +66,7 @@ type CoordinationAPI struct {
 }
 
 // NewCoordinationAPI creates a new coordination API instance
-func NewCoordinationAPI(cfg *config.DistributedConfig) *CoordinationAPI {
+func NewCoordinationAPI(cfg *config.Config) *CoordinationAPI {
 	api := &CoordinationAPI{
 		config: cfg,
 		client: &http.Client{

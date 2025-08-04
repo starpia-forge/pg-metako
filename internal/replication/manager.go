@@ -1,313 +1,424 @@
+// Purpose    : Unified replication management with distributed consensus-based failover
+// Context    : Coordinates failover decisions across multiple pg-metako nodes as default behavior
+// Constraints: Must ensure data consistency and prevent split-brain scenarios
+
 package replication
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"pg-metako/internal/config"
-	"pg-metako/internal/database"
-	"pg-metako/internal/health"
 	"sync"
 	"time"
+
+	"pg-metako/internal/config"
+	"pg-metako/internal/coordination"
+	"pg-metako/internal/database"
+	"pg-metako/internal/health"
+	"pg-metako/internal/logger"
 )
 
-// ReplicationManager manages PostgreSQL replication and failover
-type ReplicationManager struct {
-	healthChecker    *health.HealthChecker
-	masterNodes      map[string]*database.ConnectionManager
-	slaveNodes       map[string]*database.ConnectionManager
-	currentMaster    *database.ConnectionManager
-	mu               sync.RWMutex
-	failoverStopChan chan struct{}
-	failoverRunning  bool
-	failoverMu       sync.Mutex
+// Manager manages PostgreSQL replication in a distributed environment
+type Manager struct {
+	config          *config.Config
+	coordinationAPI *coordination.CoordinationAPI
+	healthChecker   *health.HealthChecker
+	localConnection *database.ConnectionManager
+
+	// Current state
+	currentMaster        string
+	isFailoverInProgress bool
+	lastFailoverTime     time.Time
+
+	// Synchronization
+	mu sync.RWMutex
+
+	// Failover tracking
+	activeProposals map[string]*FailoverProposal
+	failoverVotes   map[string]map[string]bool // proposalID -> voterNode -> vote
 }
 
-// NewReplicationManager creates a new replication manager
-func NewReplicationManager(healthChecker *health.HealthChecker) *ReplicationManager {
-	return &ReplicationManager{
-		healthChecker:    healthChecker,
-		masterNodes:      make(map[string]*database.ConnectionManager),
-		slaveNodes:       make(map[string]*database.ConnectionManager),
-		failoverStopChan: make(chan struct{}),
+// FailoverProposal represents a failover proposal with voting state
+type FailoverProposal struct {
+	ProposerNode  string
+	FailedNode    string
+	NewMasterNode string
+	ProposalTime  time.Time
+	RequiredVotes int
+	ReceivedVotes map[string]bool // voterNode -> vote
+	Status        ProposalStatus
+	ExpiryTime    time.Time
+}
+
+// ProposalStatus represents the status of a failover proposal
+type ProposalStatus string
+
+const (
+	ProposalStatusPending  ProposalStatus = "pending"
+	ProposalStatusApproved ProposalStatus = "approved"
+	ProposalStatusRejected ProposalStatus = "rejected"
+	ProposalStatusExpired  ProposalStatus = "expired"
+)
+
+// NewManager creates a new distributed replication manager
+func NewManager(cfg *config.Config, coordinationAPI *coordination.CoordinationAPI, healthChecker *health.HealthChecker, localConnection *database.ConnectionManager) *Manager {
+	return &Manager{
+		config:          cfg,
+		coordinationAPI: coordinationAPI,
+		healthChecker:   healthChecker,
+		localConnection: localConnection,
+		activeProposals: make(map[string]*FailoverProposal),
+		failoverVotes:   make(map[string]map[string]bool),
 	}
 }
 
-// AddNode adds a database node to the replication manager
-func (rm *ReplicationManager) AddNode(connManager *database.ConnectionManager) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+// Start starts the distributed replication manager
+func (dm *Manager) Start(ctx context.Context) error {
+	logger.Printf("Starting distributed replication manager for node: %s", dm.config.Identity.NodeName)
 
-	nodeName := connManager.NodeName()
-	role := connManager.Role()
+	// Initialize current master from cluster state
+	dm.updateCurrentMaster()
 
-	// Add to health checker
-	if err := rm.healthChecker.AddNode(connManager); err != nil {
-		return fmt.Errorf("failed to add node to health checker: %w", err)
-	}
+	// Start monitoring routine
+	go dm.monitoringRoutine(ctx)
 
-	// Add to appropriate node map
-	switch role {
-	case config.RoleMaster:
-		rm.masterNodes[nodeName] = connManager
-		// Set as current master if we don't have one
-		if rm.currentMaster == nil {
-			rm.currentMaster = connManager
-		}
-	case config.RoleSlave:
-		rm.slaveNodes[nodeName] = connManager
-	default:
-		return fmt.Errorf("unknown node role: %s", role)
-	}
+	// Start proposal cleanup routine
+	go dm.proposalCleanupRoutine(ctx)
 
 	return nil
 }
 
-// RemoveNode removes a database node from the replication manager
-func (rm *ReplicationManager) RemoveNode(nodeName string) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-
-	// Remove from health checker
-	if err := rm.healthChecker.RemoveNode(nodeName); err != nil {
-		return fmt.Errorf("failed to remove node from health checker: %w", err)
-	}
-
-	// Remove from node maps
-	if connManager, exists := rm.masterNodes[nodeName]; exists {
-		delete(rm.masterNodes, nodeName)
-		// If this was the current master, clear it
-		if rm.currentMaster == connManager {
-			rm.currentMaster = nil
-			// Try to set another master if available
-			for _, master := range rm.masterNodes {
-				rm.currentMaster = master
-				break
-			}
-		}
-	}
-
-	if _, exists := rm.slaveNodes[nodeName]; exists {
-		delete(rm.slaveNodes, nodeName)
-	}
-
+// Stop stops the distributed replication manager
+func (dm *Manager) Stop(ctx context.Context) error {
+	logger.Printf("Stopping distributed replication manager")
 	return nil
-}
-
-// GetMasterNodes returns all master nodes
-func (rm *ReplicationManager) GetMasterNodes() []*database.ConnectionManager {
-	rm.mu.RLock()
-	defer rm.mu.RUnlock()
-
-	masters := make([]*database.ConnectionManager, 0, len(rm.masterNodes))
-	for _, master := range rm.masterNodes {
-		masters = append(masters, master)
-	}
-
-	return masters
-}
-
-// GetSlaveNodes returns all slave nodes
-func (rm *ReplicationManager) GetSlaveNodes() []*database.ConnectionManager {
-	rm.mu.RLock()
-	defer rm.mu.RUnlock()
-
-	slaves := make([]*database.ConnectionManager, 0, len(rm.slaveNodes))
-	for _, slave := range rm.slaveNodes {
-		slaves = append(slaves, slave)
-	}
-
-	return slaves
 }
 
 // GetCurrentMaster returns the current master node
-func (rm *ReplicationManager) GetCurrentMaster() *database.ConnectionManager {
-	rm.mu.RLock()
-	defer rm.mu.RUnlock()
-
-	return rm.currentMaster
+func (dm *Manager) GetCurrentMaster() string {
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+	return dm.currentMaster
 }
 
-// PromoteSlave promotes a slave node to master
-func (rm *ReplicationManager) PromoteSlave(ctx context.Context, slaveName string) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
+// GetLocalConnection returns the local database connection
+func (dm *Manager) GetLocalConnection() *database.ConnectionManager {
+	return dm.localConnection
+}
 
-	// Find the slave node
-	slaveConn, exists := rm.slaveNodes[slaveName]
+// IsLocalNodeMaster checks if the local node is currently the master
+func (dm *Manager) IsLocalNodeMaster() bool {
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+	return dm.currentMaster == dm.config.Identity.NodeName
+}
+
+// ProposeFailover proposes a failover to the cluster
+func (dm *Manager) ProposeFailover(failedNode, newMasterNode string) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	if dm.isFailoverInProgress {
+		return fmt.Errorf("failover already in progress")
+	}
+
+	// Create proposal ID
+	proposalID := fmt.Sprintf("%s-%d", dm.config.Identity.NodeName, time.Now().Unix())
+
+	proposal := &FailoverProposal{
+		ProposerNode:  dm.config.Identity.NodeName,
+		FailedNode:    failedNode,
+		NewMasterNode: newMasterNode,
+		ProposalTime:  time.Now(),
+		RequiredVotes: dm.config.Coordination.MinConsensusNodes,
+		ReceivedVotes: make(map[string]bool),
+		Status:        ProposalStatusPending,
+		ExpiryTime:    time.Now().Add(dm.config.Coordination.FailoverTimeout),
+	}
+
+	dm.activeProposals[proposalID] = proposal
+	dm.isFailoverInProgress = true
+
+	logger.Printf("Proposed failover: %s -> %s (proposal: %s)", failedNode, newMasterNode, proposalID)
+
+	// Send proposal to coordination API
+	if err := dm.coordinationAPI.ProposeFailover(failedNode, newMasterNode); err != nil {
+		logger.Printf("Failed to send failover proposal: %v", err)
+		return err
+	}
+
+	// Start monitoring this proposal
+	go dm.monitorProposal(proposalID)
+
+	return nil
+}
+
+// HandleFailoverVote handles a vote on a failover proposal
+func (dm *Manager) HandleFailoverVote(proposalID, voterNode string, vote bool) error {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	proposal, exists := dm.activeProposals[proposalID]
 	if !exists {
-		return fmt.Errorf("slave node %s not found", slaveName)
+		return fmt.Errorf("proposal %s not found", proposalID)
 	}
 
-	// In a real implementation, this would execute PostgreSQL commands to promote the slave
-	// For now, we'll simulate the promotion by moving the node from slaves to masters
+	if proposal.Status != ProposalStatusPending {
+		return fmt.Errorf("proposal %s is not pending (status: %s)", proposalID, proposal.Status)
+	}
 
-	// Remove from slaves
-	delete(rm.slaveNodes, slaveName)
+	// Record the vote
+	proposal.ReceivedVotes[voterNode] = vote
+	logger.Printf("Received vote from %s for proposal %s: %t", voterNode, proposalID, vote)
 
-	// Add to masters
-	rm.masterNodes[slaveName] = slaveConn
-
-	// Set as current master
-	rm.currentMaster = slaveConn
-
-	// In a real implementation, you would:
-	// 1. Stop replication on the slave
-	// 2. Promote it to master (pg_promote() or similar)
-	// 3. Update configuration
-	// 4. Reconfigure other slaves to follow the new master
-
-	return nil
-}
-
-// HandleFailover handles automatic failover when master fails
-func (rm *ReplicationManager) HandleFailover(ctx context.Context) error {
-	rm.mu.Lock()
-	defer rm.mu.Unlock()
-
-	// Check if current master is healthy
-	if rm.currentMaster != nil {
-		status, err := rm.healthChecker.GetNodeStatus(rm.currentMaster.NodeName())
-		if err == nil && status.IsHealthy {
-			return nil // Master is healthy, no failover needed
+	// Count votes
+	approvalCount := 0
+	rejectionCount := 0
+	for _, v := range proposal.ReceivedVotes {
+		if v {
+			approvalCount++
+		} else {
+			rejectionCount++
 		}
 	}
 
-	// Find a healthy slave to promote
-	var candidateSlave *database.ConnectionManager
-	var candidateName string
+	// Check if we have enough votes to make a decision
+	totalVotes := len(proposal.ReceivedVotes)
+	if approvalCount >= proposal.RequiredVotes {
+		proposal.Status = ProposalStatusApproved
+		logger.Printf("Proposal %s approved with %d votes", proposalID, approvalCount)
+		go dm.executeFailover(proposal)
+	} else if rejectionCount > (len(dm.config.ClusterMembers) - proposal.RequiredVotes) {
+		proposal.Status = ProposalStatusRejected
+		logger.Printf("Proposal %s rejected with %d rejection votes", proposalID, rejectionCount)
+		dm.isFailoverInProgress = false
+	} else if totalVotes >= len(dm.config.ClusterMembers)-1 { // -1 because proposer doesn't vote
+		// All votes received but not enough approvals
+		proposal.Status = ProposalStatusRejected
+		logger.Printf("Proposal %s rejected - insufficient approvals (%d/%d)", proposalID, approvalCount, proposal.RequiredVotes)
+		dm.isFailoverInProgress = false
+	}
 
-	for slaveName, slaveConn := range rm.slaveNodes {
-		status, err := rm.healthChecker.GetNodeStatus(slaveName)
-		if err == nil && status.IsHealthy {
-			candidateSlave = slaveConn
-			candidateName = slaveName
-			break
+	return nil
+}
+
+// executeFailover executes an approved failover proposal
+func (dm *Manager) executeFailover(proposal *FailoverProposal) {
+	logger.Printf("Executing failover: %s -> %s", proposal.FailedNode, proposal.NewMasterNode)
+
+	// If this node is the new master, promote it
+	if proposal.NewMasterNode == dm.config.Identity.NodeName {
+		if err := dm.promoteLocalToMaster(); err != nil {
+			logger.Printf("Failed to promote local node to master: %v", err)
+			return
 		}
 	}
 
-	if candidateSlave == nil {
-		return errors.New("no healthy slave available for promotion")
-	}
+	// Update current master
+	dm.mu.Lock()
+	dm.currentMaster = proposal.NewMasterNode
+	dm.lastFailoverTime = time.Now()
+	dm.isFailoverInProgress = false
+	dm.mu.Unlock()
 
-	// Promote the candidate slave
-	if err := rm.promoteSlave(ctx, candidateName, candidateSlave); err != nil {
-		return fmt.Errorf("failed to promote slave %s: %w", candidateName, err)
-	}
-
-	// Reconfigure remaining slaves to follow the new master
-	newMasterHost := "localhost" // In real implementation, get from connection config
-	newMasterPort := 5432        // In real implementation, get from connection config
-
-	if err := rm.reconfigureSlaves(ctx, newMasterHost, newMasterPort); err != nil {
-		return fmt.Errorf("failed to reconfigure slaves: %w", err)
-	}
-
-	return nil
+	logger.Printf("Failover completed successfully. New master: %s", proposal.NewMasterNode)
 }
 
-// promoteSlave internal method to promote a slave (without locking)
-func (rm *ReplicationManager) promoteSlave(ctx context.Context, slaveName string, slaveConn *database.ConnectionManager) error {
-	// Remove from slaves
-	delete(rm.slaveNodes, slaveName)
+// promoteLocalToMaster promotes the local node to master
+func (dm *Manager) promoteLocalToMaster() error {
+	logger.Printf("Promoting local node to master: %s", dm.config.Identity.NodeName)
 
-	// Add to masters
-	rm.masterNodes[slaveName] = slaveConn
-
-	// Set as current master
-	rm.currentMaster = slaveConn
-
-	return nil
-}
-
-// ReconfigureSlaves reconfigures all slave nodes to follow a new master
-func (rm *ReplicationManager) ReconfigureSlaves(ctx context.Context, masterHost string, masterPort int) error {
-	rm.mu.RLock()
-	defer rm.mu.RUnlock()
-
-	return rm.reconfigureSlaves(ctx, masterHost, masterPort)
-}
-
-// reconfigureSlaves internal method to reconfigure slaves (without locking)
-func (rm *ReplicationManager) reconfigureSlaves(ctx context.Context, masterHost string, masterPort int) error {
 	// In a real implementation, this would:
-	// 1. Stop replication on each slave
-	// 2. Update primary_conninfo to point to the new master
-	// 3. Restart replication
+	// 1. Stop replication on this node
+	// 2. Promote it to master
+	// 3. Update PostgreSQL configuration
+	// 4. Restart PostgreSQL service
+	// 5. Update cluster configuration
 
-	for slaveName := range rm.slaveNodes {
-		// Simulate reconfiguration
-		_ = slaveName
-		_ = masterHost
-		_ = masterPort
-
-		// In real implementation:
-		// query := fmt.Sprintf("SELECT pg_reload_conf(); ALTER SYSTEM SET primary_conninfo = 'host=%s port=%d user=replicator';", masterHost, masterPort)
-		// _, err := slaveConn.ExecuteQuery(ctx, query)
-		// if err != nil {
-		//     return fmt.Errorf("failed to reconfigure slave %s: %w", slaveName, err)
-		// }
-	}
-
+	// For now, we'll just log the action
+	logger.Printf("Local node %s promoted to master", dm.config.Identity.NodeName)
 	return nil
 }
 
-// StartFailoverMonitoring starts automatic failover monitoring
-func (rm *ReplicationManager) StartFailoverMonitoring(ctx context.Context) error {
-	rm.failoverMu.Lock()
-	defer rm.failoverMu.Unlock()
-
-	if rm.failoverRunning {
-		return errors.New("failover monitoring is already running")
-	}
-
-	rm.failoverRunning = true
-	rm.failoverStopChan = make(chan struct{})
-
-	go rm.failoverMonitoringLoop(ctx)
-
-	return nil
-}
-
-// StopFailoverMonitoring stops automatic failover monitoring
-func (rm *ReplicationManager) StopFailoverMonitoring() {
-	rm.failoverMu.Lock()
-	defer rm.failoverMu.Unlock()
-
-	if !rm.failoverRunning {
-		return
-	}
-
-	rm.failoverRunning = false
-	close(rm.failoverStopChan)
-}
-
-// failoverMonitoringLoop runs the failover monitoring loop
-func (rm *ReplicationManager) failoverMonitoringLoop(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second) // Check every 10 seconds
+// monitoringRoutine monitors cluster health and triggers failover when needed
+func (dm *Manager) monitoringRoutine(ctx context.Context) {
+	ticker := time.NewTicker(dm.config.Coordination.HeartbeatInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-rm.failoverStopChan:
-			return
 		case <-ticker.C:
-			if err := rm.HandleFailover(ctx); err != nil {
-				// In a real implementation, this would be logged
-				_ = err
+			dm.checkClusterHealth()
+		}
+	}
+}
+
+// checkClusterHealth checks the health of cluster members and triggers failover if needed
+func (dm *Manager) checkClusterHealth() {
+	clusterState := dm.coordinationAPI.GetClusterState()
+
+	// Check if current master is healthy
+	if dm.currentMaster != "" {
+		if status, exists := clusterState.Nodes[dm.currentMaster]; exists {
+			if !status.IsHealthy {
+				logger.Printf("Current master %s is unhealthy, initiating failover", dm.currentMaster)
+
+				// Select new master
+				newMaster := dm.selectNewMaster(clusterState, dm.currentMaster)
+				if newMaster != "" {
+					if err := dm.ProposeFailover(dm.currentMaster, newMaster); err != nil {
+						logger.Printf("Failed to propose failover: %v", err)
+					}
+				} else {
+					logger.Printf("No suitable replacement master found")
+				}
+			}
+		}
+	} else {
+		// No current master, try to establish one
+		newMaster := dm.selectNewMaster(clusterState, "")
+		if newMaster != "" {
+			logger.Printf("No current master, proposing %s as master", newMaster)
+			if err := dm.ProposeFailover("", newMaster); err != nil {
+				logger.Printf("Failed to propose initial master: %v", err)
 			}
 		}
 	}
 }
 
-// GetNodeStatus returns the health status of a node
-func (rm *ReplicationManager) GetNodeStatus(nodeName string) (*health.NodeStatus, error) {
-	return rm.healthChecker.GetNodeStatus(nodeName)
+// selectNewMaster selects a new master from healthy cluster members
+func (dm *Manager) selectNewMaster(clusterState coordination.ClusterState, failedMaster string) string {
+	// Prefer local node if it's healthy and eligible
+	if dm.config.LocalDB.Role == config.RoleMaster {
+		if status, exists := clusterState.Nodes[dm.config.Identity.NodeName]; exists && status.IsHealthy {
+			return dm.config.Identity.NodeName
+		}
+	}
+
+	// Find healthy master nodes
+	for nodeName, status := range clusterState.Nodes {
+		if nodeName != failedMaster && status.IsHealthy && status.Role == string(config.RoleMaster) {
+			return nodeName
+		}
+	}
+
+	// If no master nodes available, consider promoting a slave
+	for nodeName, status := range clusterState.Nodes {
+		if nodeName != failedMaster && status.IsHealthy && status.Role == string(config.RoleSlave) {
+			return nodeName
+		}
+	}
+
+	return ""
 }
 
-// GetAllNodeStatuses returns the health status of all nodes
-func (rm *ReplicationManager) GetAllNodeStatuses() map[string]*health.NodeStatus {
-	return rm.healthChecker.GetAllStatuses()
+// updateCurrentMaster updates the current master from cluster state
+func (dm *Manager) updateCurrentMaster() {
+	clusterState := dm.coordinationAPI.GetClusterState()
+
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	if clusterState.CurrentMaster != "" {
+		dm.currentMaster = clusterState.CurrentMaster
+		logger.Printf("Updated current master to: %s", dm.currentMaster)
+	} else {
+		// Try to find a healthy master from cluster members
+		for nodeName, status := range clusterState.Nodes {
+			if status.IsHealthy && status.Role == string(config.RoleMaster) {
+				dm.currentMaster = nodeName
+				logger.Printf("Detected current master: %s", dm.currentMaster)
+				break
+			}
+		}
+	}
 }
+
+// monitorProposal monitors a specific failover proposal
+func (dm *Manager) monitorProposal(proposalID string) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			dm.mu.RLock()
+			proposal, exists := dm.activeProposals[proposalID]
+			if !exists {
+				dm.mu.RUnlock()
+				return
+			}
+
+			// Check if proposal has expired
+			if time.Now().After(proposal.ExpiryTime) && proposal.Status == ProposalStatusPending {
+				dm.mu.RUnlock()
+				dm.mu.Lock()
+				proposal.Status = ProposalStatusExpired
+				dm.isFailoverInProgress = false
+				dm.mu.Unlock()
+				logger.Printf("Proposal %s expired", proposalID)
+				return
+			}
+
+			// Check if proposal is completed
+			if proposal.Status != ProposalStatusPending {
+				dm.mu.RUnlock()
+				return
+			}
+			dm.mu.RUnlock()
+		}
+	}
+}
+
+// proposalCleanupRoutine cleans up old proposals
+func (dm *Manager) proposalCleanupRoutine(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			dm.cleanupOldProposals()
+		}
+	}
+}
+
+// cleanupOldProposals removes old completed or expired proposals
+func (dm *Manager) cleanupOldProposals() {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	cutoff := time.Now().Add(-10 * time.Minute)
+	for proposalID, proposal := range dm.activeProposals {
+		if proposal.ProposalTime.Before(cutoff) && proposal.Status != ProposalStatusPending {
+			delete(dm.activeProposals, proposalID)
+			logger.Printf("Cleaned up old proposal: %s", proposalID)
+		}
+	}
+}
+
+// GetFailoverStatus returns the current failover status
+func (dm *Manager) GetFailoverStatus() map[string]interface{} {
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+
+	return map[string]interface{}{
+		"current_master":         dm.currentMaster,
+		"failover_in_progress":   dm.isFailoverInProgress,
+		"last_failover_time":     dm.lastFailoverTime,
+		"active_proposals_count": len(dm.activeProposals),
+	}
+}
+
+// Legacy compatibility methods for backward compatibility
+
+// NewDistributedManager creates a new manager (legacy compatibility)
+func NewDistributedManager(cfg *config.Config, coordinationAPI *coordination.CoordinationAPI, healthChecker *health.HealthChecker, localConnection *database.ConnectionManager) *Manager {
+	return NewManager(cfg, coordinationAPI, healthChecker, localConnection)
+}
+
+// DistributedManager is an alias for Manager (legacy compatibility)
+type DistributedManager = Manager
