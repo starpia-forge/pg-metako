@@ -154,7 +154,7 @@ func (api *CoordinationAPI) ProposeFailover(ctx context.Context, failedNode, new
 		FailedNode:    failedNode,
 		NewMasterNode: newMasterNode,
 		ProposalTime:  time.Now(),
-		RequiredVotes: api.config.Coordination.MinConsensusNodes,
+		RequiredVotes: api.config.GetMinConsensusNodes(),
 	}
 
 	// Send proposal to all cluster members
@@ -180,7 +180,7 @@ func (api *CoordinationAPI) ProposeFailover(ctx context.Context, failedNode, new
 
 // heartbeatRoutine sends periodic heartbeats to cluster members
 func (api *CoordinationAPI) heartbeatRoutine(ctx context.Context) {
-	ticker := time.NewTicker(api.config.Coordination.HeartbeatInterval)
+	ticker := time.NewTicker(api.config.GetHeartbeatInterval())
 	defer ticker.Stop()
 
 	for {

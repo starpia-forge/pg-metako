@@ -28,9 +28,39 @@ pg-metako is a distributed PostgreSQL cluster management system that provides:
 - ✅ Master-Slave architecture with distributed consensus for promotion
 - ✅ Continuous health checking across all cluster nodes
 - ✅ Automatic failover with distributed coordination and consensus
+- ✅ **Automatic Pair Mode**: Seamless automatic failover for 2-node clusters
 - ✅ Intelligent query routing with local node preference
 - ✅ Load balancing algorithms (Round-Robin, Least Connections)
 - ✅ Inter-node communication and coordination API
+
+### Automatic Pair Mode
+
+pg-metako now automatically detects and optimizes 2-node clusters with seamless pair mode functionality:
+
+#### Pair Mode Features
+- **Automatic Detection**: No special configuration required - pair mode is automatically enabled for 2-node clusters
+- **Seamless Failover**: Master node failure triggers automatic slave promotion
+- **Safety Mechanisms**: Multiple safety checks to prevent split-brain scenarios
+- **Failure Threshold**: Configurable consecutive failure count before triggering failover
+- **Safety Delay**: Configurable delay before failover execution to prevent transient issues
+- **Recovery Detection**: Automatic failover cancellation if failed node recovers during safety delay
+
+#### Pair Mode Safety Mechanisms
+1. **Consecutive Failure Threshold**: Configurable number of consecutive failures required before failover
+2. **Safety Delay**: Additional wait time before failover execution to prevent transient failures
+3. **Recovery Check**: Verification that failed node is still down before executing failover
+4. **Self-Vote**: Surviving node automatically votes for itself to achieve consensus
+
+#### Pair Mode Configuration
+```yaml
+coordination:
+  min_consensus_nodes: 1          # Automatically adjusted for pair clusters
+  # Pair mode settings (automatically enabled for 2-node clusters)
+  # pair_failover_delay: "10s"     # Safety delay before executing failover
+  # pair_failure_threshold: 3      # Consecutive failures required before failover
+```
+
+📖 **For detailed pair cluster configuration, see [configs/pair-example.yaml](configs/pair-example.yaml)**
 
 ### Configuration Management
 - ✅ YAML configuration files
@@ -130,11 +160,16 @@ cluster_members:
 
 # Coordination settings for distributed consensus
 coordination:
-  heartbeat_interval: "10s"        # Heartbeat interval for cluster membership
-  communication_timeout: "5s"     # Timeout for inter-node communication
-  failover_timeout: "30s"         # Failover coordination timeout
-  min_consensus_nodes: 2          # Minimum nodes required for failover consensus
-  local_node_preference: 0.8      # Local node preference weight (0.0 to 1.0)
+  cluster_mode:
+    heartbeat_interval: "10s"
+    communication_timeout: "5s"
+    failover_timeout: "30s"
+    min_consensus_nodes: 2
+    local_node_preference: 0.8
+  pair_mode:
+    enable: true
+    failover_delay: "10s"
+    failure_threshold: 3
 
 # Health check configuration
 health_check:

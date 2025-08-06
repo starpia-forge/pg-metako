@@ -75,8 +75,8 @@ type ClusterMember struct {
 	Role     NodeRole `yaml:"role"` // Role of the PostgreSQL instance on this node
 }
 
-// CoordinationConfig represents settings for inter-node coordination
-type CoordinationConfig struct {
+// ClusterModeConfig represents settings for general distributed cluster coordination
+type ClusterModeConfig struct {
 	// Heartbeat interval for cluster membership
 	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
 
@@ -91,6 +91,37 @@ type CoordinationConfig struct {
 
 	// Local node preference weight (0.0 to 1.0)
 	LocalNodePreference float64 `yaml:"local_node_preference"`
+}
+
+// PairModeConfig represents settings for 2-node cluster coordination
+type PairModeConfig struct {
+	// Enable special handling for pair clusters (automatically enabled for 2-node clusters)
+	Enable bool `yaml:"enable"`
+
+	// Additional delay before executing failover in pair mode (safety measure)
+	FailoverDelay time.Duration `yaml:"failover_delay"`
+
+	// Number of consecutive health check failures required before failover in pair mode
+	FailureThreshold int `yaml:"failure_threshold"`
+}
+
+// CoordinationConfig represents settings for inter-node coordination
+type CoordinationConfig struct {
+	// General distributed cluster settings
+	ClusterMode ClusterModeConfig `yaml:"cluster_mode"`
+
+	// Pair mode settings (for 2-node clusters)
+	PairMode PairModeConfig `yaml:"pair_mode"`
+
+	// Legacy fields for backward compatibility (will be deprecated)
+	HeartbeatInterval    time.Duration `yaml:"heartbeat_interval,omitempty"`
+	CommunicationTimeout time.Duration `yaml:"communication_timeout,omitempty"`
+	FailoverTimeout      time.Duration `yaml:"failover_timeout,omitempty"`
+	MinConsensusNodes    int           `yaml:"min_consensus_nodes,omitempty"`
+	LocalNodePreference  float64       `yaml:"local_node_preference,omitempty"`
+	EnablePairMode       bool          `yaml:"enable_pair_mode,omitempty"`
+	PairFailoverDelay    time.Duration `yaml:"pair_failover_delay,omitempty"`
+	PairFailureThreshold int           `yaml:"pair_failure_threshold,omitempty"`
 }
 
 // Config represents the complete application configuration for distributed deployment
@@ -160,7 +191,8 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate coordination settings
-	if err := c.Coordination.validate(); err != nil {
+	totalClusterSize := len(c.ClusterMembers) + 1 // +1 for local node
+	if err := c.Coordination.validate(totalClusterSize); err != nil {
 		return fmt.Errorf("coordination validation failed: %w", err)
 	}
 
@@ -233,23 +265,93 @@ func (cm *ClusterMember) validate() error {
 }
 
 // validate validates coordination configuration
-func (cc *CoordinationConfig) validate() error {
-	if cc.HeartbeatInterval <= 0 {
-		return errors.New("heartbeat interval must be positive")
+func (cc *CoordinationConfig) validate(totalClusterSize int) error {
+	// Migrate legacy configuration to new structure if needed
+	cc.migrateLegacyConfig()
+
+	// Validate cluster mode configuration
+	if cc.ClusterMode.HeartbeatInterval <= 0 {
+		return errors.New("cluster_mode heartbeat_interval must be positive")
 	}
-	if cc.CommunicationTimeout <= 0 {
-		return errors.New("communication timeout must be positive")
+	if cc.ClusterMode.CommunicationTimeout <= 0 {
+		return errors.New("cluster_mode communication_timeout must be positive")
 	}
-	if cc.FailoverTimeout <= 0 {
-		return errors.New("failover timeout must be positive")
+	if cc.ClusterMode.FailoverTimeout <= 0 {
+		return errors.New("cluster_mode failover_timeout must be positive")
 	}
-	if cc.MinConsensusNodes < 1 {
-		return errors.New("minimum consensus nodes must be at least 1")
+	if cc.ClusterMode.MinConsensusNodes < 1 {
+		return errors.New("cluster_mode min_consensus_nodes must be at least 1")
 	}
-	if cc.LocalNodePreference < 0.0 || cc.LocalNodePreference > 1.0 {
-		return errors.New("local node preference must be between 0.0 and 1.0")
+	if cc.ClusterMode.LocalNodePreference < 0.0 || cc.ClusterMode.LocalNodePreference > 1.0 {
+		return errors.New("cluster_mode local_node_preference must be between 0.0 and 1.0")
 	}
+
+	// Auto-detect and enable pair mode for 2-node clusters
+	if totalClusterSize == 2 {
+		cc.PairMode.Enable = true
+		if cc.ClusterMode.MinConsensusNodes > 1 {
+			cc.ClusterMode.MinConsensusNodes = 1 // Auto-adjust for pair mode
+		}
+		// Set default values if not specified
+		if cc.PairMode.FailoverDelay == 0 {
+			cc.PairMode.FailoverDelay = 10 * time.Second
+		}
+		if cc.PairMode.FailureThreshold == 0 {
+			cc.PairMode.FailureThreshold = 3
+		}
+	}
+
+	// Validate pair mode configuration
+	if cc.PairMode.Enable {
+		if totalClusterSize != 2 {
+			return fmt.Errorf("pair mode can only be enabled for exactly 2 nodes (pair cluster), got %d", totalClusterSize)
+		}
+		if cc.ClusterMode.MinConsensusNodes != 1 {
+			return errors.New("min_consensus_nodes must be 1 when pair mode is enabled")
+		}
+		if cc.PairMode.FailoverDelay < 0 {
+			return errors.New("pair_mode failover_delay must be non-negative")
+		}
+		if cc.PairMode.FailureThreshold < 1 {
+			return errors.New("pair_mode failure_threshold must be at least 1")
+		}
+	} else {
+		// Standard validation for multi-node clusters
+		if cc.ClusterMode.MinConsensusNodes > totalClusterSize {
+			return fmt.Errorf("min_consensus_nodes (%d) cannot exceed total cluster size (%d)", cc.ClusterMode.MinConsensusNodes, totalClusterSize)
+		}
+	}
+
 	return nil
+}
+
+// migrateLegacyConfig migrates legacy flat configuration to new nested structure
+func (cc *CoordinationConfig) migrateLegacyConfig() {
+	// Only migrate if new structure is empty and legacy fields are present
+	if cc.ClusterMode.HeartbeatInterval == 0 && cc.HeartbeatInterval > 0 {
+		cc.ClusterMode.HeartbeatInterval = cc.HeartbeatInterval
+	}
+	if cc.ClusterMode.CommunicationTimeout == 0 && cc.CommunicationTimeout > 0 {
+		cc.ClusterMode.CommunicationTimeout = cc.CommunicationTimeout
+	}
+	if cc.ClusterMode.FailoverTimeout == 0 && cc.FailoverTimeout > 0 {
+		cc.ClusterMode.FailoverTimeout = cc.FailoverTimeout
+	}
+	if cc.ClusterMode.MinConsensusNodes == 0 && cc.MinConsensusNodes > 0 {
+		cc.ClusterMode.MinConsensusNodes = cc.MinConsensusNodes
+	}
+	if cc.ClusterMode.LocalNodePreference == 0.0 && cc.LocalNodePreference > 0.0 {
+		cc.ClusterMode.LocalNodePreference = cc.LocalNodePreference
+	}
+	if !cc.PairMode.Enable && cc.EnablePairMode {
+		cc.PairMode.Enable = cc.EnablePairMode
+	}
+	if cc.PairMode.FailoverDelay == 0 && cc.PairFailoverDelay > 0 {
+		cc.PairMode.FailoverDelay = cc.PairFailoverDelay
+	}
+	if cc.PairMode.FailureThreshold == 0 && cc.PairFailureThreshold > 0 {
+		cc.PairMode.FailureThreshold = cc.PairFailureThreshold
+	}
 }
 
 // IsLocalNode checks if the given node name is the local node
@@ -292,6 +394,73 @@ func (c *Config) GetSlaveNodes() []ClusterMember {
 		}
 	}
 	return slaves
+}
+
+// IsPairMode returns true if the cluster is configured for pair mode
+func (c *Config) IsPairMode() bool {
+	// Ensure migration has happened
+	c.Coordination.migrateLegacyConfig()
+	return c.Coordination.PairMode.Enable
+}
+
+// GetTotalClusterSize returns the total number of nodes in the cluster
+func (c *Config) GetTotalClusterSize() int {
+	return len(c.ClusterMembers) + 1 // +1 for local node
+}
+
+// GetPairFailoverDelay returns the failover delay for pair mode
+func (c *Config) GetPairFailoverDelay() time.Duration {
+	// Ensure migration has happened
+	c.Coordination.migrateLegacyConfig()
+	if c.Coordination.PairMode.FailoverDelay == 0 {
+		return 10 * time.Second // Default delay
+	}
+	return c.Coordination.PairMode.FailoverDelay
+}
+
+// GetPairFailureThreshold returns the failure threshold for pair mode
+func (c *Config) GetPairFailureThreshold() int {
+	// Ensure migration has happened
+	c.Coordination.migrateLegacyConfig()
+	if c.Coordination.PairMode.FailureThreshold == 0 {
+		return 3 // Default threshold
+	}
+	return c.Coordination.PairMode.FailureThreshold
+}
+
+// GetHeartbeatInterval returns the heartbeat interval for cluster coordination
+func (c *Config) GetHeartbeatInterval() time.Duration {
+	// Ensure migration has happened
+	c.Coordination.migrateLegacyConfig()
+	return c.Coordination.ClusterMode.HeartbeatInterval
+}
+
+// GetCommunicationTimeout returns the communication timeout for cluster coordination
+func (c *Config) GetCommunicationTimeout() time.Duration {
+	// Ensure migration has happened
+	c.Coordination.migrateLegacyConfig()
+	return c.Coordination.ClusterMode.CommunicationTimeout
+}
+
+// GetFailoverTimeout returns the failover timeout for cluster coordination
+func (c *Config) GetFailoverTimeout() time.Duration {
+	// Ensure migration has happened
+	c.Coordination.migrateLegacyConfig()
+	return c.Coordination.ClusterMode.FailoverTimeout
+}
+
+// GetMinConsensusNodes returns the minimum consensus nodes for cluster coordination
+func (c *Config) GetMinConsensusNodes() int {
+	// Ensure migration has happened
+	c.Coordination.migrateLegacyConfig()
+	return c.Coordination.ClusterMode.MinConsensusNodes
+}
+
+// GetLocalNodePreference returns the local node preference for cluster coordination
+func (c *Config) GetLocalNodePreference() float64 {
+	// Ensure migration has happened
+	c.Coordination.migrateLegacyConfig()
+	return c.Coordination.ClusterMode.LocalNodePreference
 }
 
 // DetectLocalNodeName attempts to detect the local node name based on network interfaces

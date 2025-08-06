@@ -35,6 +35,10 @@ type Manager struct {
 	// Failover tracking
 	activeProposals map[string]*FailoverProposal
 	failoverVotes   map[string]map[string]bool // proposalID -> voterNode -> vote
+
+	// 2-node mode failure tracking
+	nodeFailureCounts map[string]int // nodeName -> consecutive failure count
+	lastHealthCheck   time.Time
 }
 
 // FailoverProposal represents a failover proposal with voting state
@@ -62,12 +66,13 @@ const (
 // NewManager creates a new distributed replication manager
 func NewManager(cfg *config.Config, coordinationAPI *coordination.CoordinationAPI, healthChecker *health.HealthChecker, localConnection *database.ConnectionManager) *Manager {
 	return &Manager{
-		config:          cfg,
-		coordinationAPI: coordinationAPI,
-		healthChecker:   healthChecker,
-		localConnection: localConnection,
-		activeProposals: make(map[string]*FailoverProposal),
-		failoverVotes:   make(map[string]map[string]bool),
+		config:            cfg,
+		coordinationAPI:   coordinationAPI,
+		healthChecker:     healthChecker,
+		localConnection:   localConnection,
+		activeProposals:   make(map[string]*FailoverProposal),
+		failoverVotes:     make(map[string]map[string]bool),
+		nodeFailureCounts: make(map[string]int),
 	}
 }
 
@@ -129,10 +134,10 @@ func (dm *Manager) ProposeFailover(ctx context.Context, failedNode, newMasterNod
 		FailedNode:    failedNode,
 		NewMasterNode: newMasterNode,
 		ProposalTime:  time.Now(),
-		RequiredVotes: dm.config.Coordination.MinConsensusNodes,
+		RequiredVotes: dm.config.GetMinConsensusNodes(),
 		ReceivedVotes: make(map[string]bool),
 		Status:        ProposalStatusPending,
-		ExpiryTime:    time.Now().Add(dm.config.Coordination.FailoverTimeout),
+		ExpiryTime:    time.Now().Add(dm.config.GetFailoverTimeout()),
 	}
 
 	dm.activeProposals[proposalID] = proposal
@@ -144,6 +149,17 @@ func (dm *Manager) ProposeFailover(ctx context.Context, failedNode, newMasterNod
 	if err := dm.coordinationAPI.ProposeFailover(ctx, failedNode, newMasterNode); err != nil {
 		logger.Printf("Failed to send failover proposal: %v", err)
 		return err
+	}
+
+	// In pair mode, automatically cast a self-vote if this node is the new master
+	if dm.config.IsPairMode() && newMasterNode == dm.config.Identity.NodeName {
+		logger.Printf("Pair mode: casting self-vote for proposal %s", proposalID)
+		// Unlock before calling HandleFailoverVote to avoid deadlock
+		dm.mu.Unlock()
+		if err := dm.HandleFailoverVote(proposalID, dm.config.Identity.NodeName, true); err != nil {
+			logger.Printf("Failed to cast self-vote: %v", err)
+		}
+		dm.mu.Lock()
 	}
 
 	// Start monitoring this proposal
@@ -183,19 +199,39 @@ func (dm *Manager) HandleFailoverVote(proposalID, voterNode string, vote bool) e
 
 	// Check if we have enough votes to make a decision
 	totalVotes := len(proposal.ReceivedVotes)
-	if approvalCount >= proposal.RequiredVotes {
-		proposal.Status = ProposalStatusApproved
-		logger.Printf("Proposal %s approved with %d votes", proposalID, approvalCount)
-		go dm.executeFailover(proposal)
-	} else if rejectionCount > (len(dm.config.ClusterMembers) - proposal.RequiredVotes) {
-		proposal.Status = ProposalStatusRejected
-		logger.Printf("Proposal %s rejected with %d rejection votes", proposalID, rejectionCount)
-		dm.isFailoverInProgress = false
-	} else if totalVotes >= len(dm.config.ClusterMembers)-1 { // -1 because proposer doesn't vote
-		// All votes received but not enough approvals
-		proposal.Status = ProposalStatusRejected
-		logger.Printf("Proposal %s rejected - insufficient approvals (%d/%d)", proposalID, approvalCount, proposal.RequiredVotes)
-		dm.isFailoverInProgress = false
+
+	// Special handling for pair mode
+	if dm.config.IsPairMode() {
+		// In pair mode, if this is the proposer and we have at least one vote (self-vote), approve immediately
+		if proposal.ProposerNode == dm.config.Identity.NodeName && approvalCount >= 1 {
+			proposal.Status = ProposalStatusApproved
+			logger.Printf("Proposal %s approved in pair mode with %d votes (proposer: %s)", proposalID, approvalCount, proposal.ProposerNode)
+			go dm.executeFailoverWithDelay(proposal, dm.config.GetPairFailoverDelay())
+			return nil
+		}
+		// If we received a rejection in pair mode, reject immediately
+		if rejectionCount > 0 {
+			proposal.Status = ProposalStatusRejected
+			logger.Printf("Proposal %s rejected in pair mode with %d rejection votes", proposalID, rejectionCount)
+			dm.isFailoverInProgress = false
+			return nil
+		}
+	} else {
+		// Standard multi-node consensus logic
+		if approvalCount >= proposal.RequiredVotes {
+			proposal.Status = ProposalStatusApproved
+			logger.Printf("Proposal %s approved with %d votes", proposalID, approvalCount)
+			go dm.executeFailover(proposal)
+		} else if rejectionCount > (len(dm.config.ClusterMembers) - proposal.RequiredVotes) {
+			proposal.Status = ProposalStatusRejected
+			logger.Printf("Proposal %s rejected with %d rejection votes", proposalID, rejectionCount)
+			dm.isFailoverInProgress = false
+		} else if totalVotes >= len(dm.config.ClusterMembers)-1 { // -1 because proposer doesn't vote
+			// All votes received but not enough approvals
+			proposal.Status = ProposalStatusRejected
+			logger.Printf("Proposal %s rejected - insufficient approvals (%d/%d)", proposalID, approvalCount, proposal.RequiredVotes)
+			dm.isFailoverInProgress = false
+		}
 	}
 
 	return nil
@@ -223,6 +259,30 @@ func (dm *Manager) executeFailover(proposal *FailoverProposal) {
 	logger.Printf("Failover completed successfully. New master: %s", proposal.NewMasterNode)
 }
 
+// executeFailoverWithDelay executes an approved failover proposal with a safety delay
+func (dm *Manager) executeFailoverWithDelay(proposal *FailoverProposal, delay time.Duration) {
+	logger.Printf("Executing failover with %v delay: %s -> %s", delay, proposal.FailedNode, proposal.NewMasterNode)
+
+	// Safety delay for 2-node mode to prevent split-brain scenarios
+	if delay > 0 {
+		logger.Printf("Waiting %v before executing failover for safety", delay)
+		time.Sleep(delay)
+
+		// Re-check cluster state after delay to ensure the failed node is still down
+		clusterState := dm.coordinationAPI.GetClusterState()
+		if status, exists := clusterState.Nodes[proposal.FailedNode]; exists && status.IsHealthy {
+			logger.Printf("Failed node %s has recovered during delay, aborting failover", proposal.FailedNode)
+			dm.mu.Lock()
+			dm.isFailoverInProgress = false
+			dm.mu.Unlock()
+			return
+		}
+	}
+
+	// Execute the actual failover
+	dm.executeFailover(proposal)
+}
+
 // promoteLocalToMaster promotes the local node to master
 func (dm *Manager) promoteLocalToMaster() error {
 	logger.Printf("Promoting local node to master: %s", dm.config.Identity.NodeName)
@@ -241,7 +301,7 @@ func (dm *Manager) promoteLocalToMaster() error {
 
 // monitoringRoutine monitors cluster health and triggers failover when needed
 func (dm *Manager) monitoringRoutine(ctx context.Context) {
-	ticker := time.NewTicker(dm.config.Coordination.HeartbeatInterval)
+	ticker := time.NewTicker(dm.config.GetHeartbeatInterval())
 	defer ticker.Stop()
 
 	for {
@@ -257,22 +317,17 @@ func (dm *Manager) monitoringRoutine(ctx context.Context) {
 // checkClusterHealth checks the health of cluster members and triggers failover if needed
 func (dm *Manager) checkClusterHealth(ctx context.Context) {
 	clusterState := dm.coordinationAPI.GetClusterState()
+	dm.lastHealthCheck = time.Now()
 
 	// Check if current master is healthy
 	if dm.currentMaster != "" {
 		if status, exists := clusterState.Nodes[dm.currentMaster]; exists {
 			if !status.IsHealthy {
-				logger.Printf("Current master %s is unhealthy, initiating failover", dm.currentMaster)
-
-				// Select new master
-				newMaster := dm.selectNewMaster(clusterState, dm.currentMaster)
-				if newMaster != "" {
-					if err := dm.ProposeFailover(ctx, dm.currentMaster, newMaster); err != nil {
-						logger.Printf("Failed to propose failover: %v", err)
-					}
-				} else {
-					logger.Printf("No suitable replacement master found")
-				}
+				// Handle unhealthy master with failure threshold logic
+				dm.handleUnhealthyMaster(ctx, clusterState, dm.currentMaster)
+			} else {
+				// Master is healthy, reset failure count
+				dm.resetNodeFailureCount(dm.currentMaster)
 			}
 		}
 	} else {
@@ -285,6 +340,62 @@ func (dm *Manager) checkClusterHealth(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// handleUnhealthyMaster handles the case when the current master is unhealthy
+func (dm *Manager) handleUnhealthyMaster(ctx context.Context, clusterState coordination.ClusterState, masterNode string) {
+	// Increment failure count for the master
+	dm.incrementNodeFailureCount(masterNode)
+
+	failureCount := dm.getNodeFailureCount(masterNode)
+	threshold := dm.getFailureThreshold()
+
+	logger.Printf("Master %s is unhealthy (failure count: %d/%d)", masterNode, failureCount, threshold)
+
+	// Check if we've reached the failure threshold
+	if failureCount >= threshold {
+		logger.Printf("Master %s has exceeded failure threshold, initiating failover", masterNode)
+
+		// Select new master
+		newMaster := dm.selectNewMaster(clusterState, masterNode)
+		if newMaster != "" {
+			if err := dm.ProposeFailover(ctx, masterNode, newMaster); err != nil {
+				logger.Printf("Failed to propose failover: %v", err)
+			}
+		} else {
+			logger.Printf("No suitable replacement master found")
+		}
+	}
+}
+
+// incrementNodeFailureCount increments the failure count for a node
+func (dm *Manager) incrementNodeFailureCount(nodeName string) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.nodeFailureCounts[nodeName]++
+}
+
+// resetNodeFailureCount resets the failure count for a node
+func (dm *Manager) resetNodeFailureCount(nodeName string) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	delete(dm.nodeFailureCounts, nodeName)
+}
+
+// getNodeFailureCount gets the current failure count for a node
+func (dm *Manager) getNodeFailureCount(nodeName string) int {
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+	return dm.nodeFailureCounts[nodeName]
+}
+
+// getFailureThreshold returns the appropriate failure threshold based on cluster mode
+func (dm *Manager) getFailureThreshold() int {
+	if dm.config.IsPairMode() {
+		return dm.config.GetPairFailureThreshold()
+	}
+	// For multi-node clusters, use the standard health check failure threshold
+	return 3 // Default threshold for non-pair clusters
 }
 
 // selectNewMaster selects a new master from healthy cluster members

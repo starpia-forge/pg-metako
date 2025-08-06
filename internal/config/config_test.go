@@ -110,6 +110,108 @@ security:
 	}
 }
 
+func TestCoordinationConfigStructure(t *testing.T) {
+	// Test the new nested coordination configuration structure
+	yamlContent := `
+identity:
+  node_name: "test-node"
+  local_db_host: "localhost"
+  local_db_port: 5432
+  api_host: "localhost"
+  api_port: 8080
+
+local_db:
+  name: "test-db"
+  host: "localhost"
+  port: 5432
+  role: "master"
+  username: "postgres"
+  password: "password"
+  database: "testdb"
+
+cluster_members:
+  - node_name: "test-node-2"
+    api_host: "192.168.1.102"
+    api_port: 8080
+    role: "slave"
+  - node_name: "test-node-3"
+    api_host: "192.168.1.103"
+    api_port: 8080
+    role: "slave"
+
+coordination:
+  cluster_mode:
+    heartbeat_interval: "10s"
+    communication_timeout: "5s"
+    failover_timeout: "30s"
+    min_consensus_nodes: 2
+    local_node_preference: 0.8
+  pair_mode:
+    enable: false
+    failover_delay: "10s"
+    failure_threshold: 3
+
+health_check:
+  interval: "30s"
+  timeout: "5s"
+  failure_threshold: 3
+
+load_balancer:
+  algorithm: "round_robin"
+  read_timeout: "10s"
+  write_timeout: "10s"
+
+security:
+  tls_enabled: false
+`
+
+	// Create temporary file
+	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(yamlContent); err != nil {
+		t.Fatalf("Failed to write to temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// Load configuration
+	config, err := LoadFromFile(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	// Test cluster_mode fields
+	if config.Coordination.ClusterMode.HeartbeatInterval != 10*time.Second {
+		t.Errorf("Expected cluster_mode heartbeat_interval to be 10s, got %v", config.Coordination.ClusterMode.HeartbeatInterval)
+	}
+	if config.Coordination.ClusterMode.CommunicationTimeout != 5*time.Second {
+		t.Errorf("Expected cluster_mode communication_timeout to be 5s, got %v", config.Coordination.ClusterMode.CommunicationTimeout)
+	}
+	if config.Coordination.ClusterMode.FailoverTimeout != 30*time.Second {
+		t.Errorf("Expected cluster_mode failover_timeout to be 30s, got %v", config.Coordination.ClusterMode.FailoverTimeout)
+	}
+	if config.Coordination.ClusterMode.MinConsensusNodes != 2 {
+		t.Errorf("Expected cluster_mode min_consensus_nodes to be 2, got %d", config.Coordination.ClusterMode.MinConsensusNodes)
+	}
+	if config.Coordination.ClusterMode.LocalNodePreference != 0.8 {
+		t.Errorf("Expected cluster_mode local_node_preference to be 0.8, got %f", config.Coordination.ClusterMode.LocalNodePreference)
+	}
+
+	// Test pair_mode fields
+	if config.Coordination.PairMode.Enable {
+		t.Error("Expected pair_mode enable to be false")
+	}
+	if config.Coordination.PairMode.FailoverDelay != 10*time.Second {
+		t.Errorf("Expected pair_mode failover_delay to be 10s, got %v", config.Coordination.PairMode.FailoverDelay)
+	}
+	if config.Coordination.PairMode.FailureThreshold != 3 {
+		t.Errorf("Expected pair_mode failure_threshold to be 3, got %d", config.Coordination.PairMode.FailureThreshold)
+	}
+}
+
 func TestValidateConfig(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -285,7 +285,7 @@ func (r *Router) selectReadNode(ctx context.Context) (ConnectionManager, bool) {
 	// Check if local node is healthy and can handle reads
 	if r.isLocalNodeHealthy(ctx) {
 		// Apply local node preference
-		if r.randomGenerator.Float64() < r.config.Coordination.LocalNodePreference {
+		if r.randomGenerator.Float64() < r.config.GetLocalNodePreference() {
 			r.logger.Printf("Routing read query to local node: %s", r.config.Identity.NodeName)
 			return r.localConnection, true
 		}
