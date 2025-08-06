@@ -1,3 +1,6 @@
+// Purpose    : Configuration management for PostgreSQL cluster coordination and node identity
+// Context    : Multi-node PostgreSQL cluster with master-slave replication and failover coordination
+// Constraints: Must support both pair-mode (2 nodes) and cluster-mode (3+ nodes) configurations
 package config
 
 import (
@@ -463,10 +466,28 @@ func (c *Config) GetLocalNodePreference() float64 {
 	return c.Coordination.ClusterMode.LocalNodePreference
 }
 
+// NetworkInterface defines an interface for network operations to enable testing
+type NetworkInterface interface {
+	GetLocalIPs() ([]string, error)
+}
+
+// DefaultNetworkInterface implements NetworkInterface using real network calls
+type DefaultNetworkInterface struct{}
+
+// GetLocalIPs returns all local IP addresses using real network interfaces
+func (d *DefaultNetworkInterface) GetLocalIPs() ([]string, error) {
+	return getLocalIPs()
+}
+
 // DetectLocalNodeName attempts to detect the local node name based on network interfaces
 func DetectLocalNodeName(clusterMembers []ClusterMember) (string, error) {
+	return DetectLocalNodeNameWithInterface(clusterMembers, &DefaultNetworkInterface{})
+}
+
+// DetectLocalNodeNameWithInterface allows dependency injection for testing
+func DetectLocalNodeNameWithInterface(clusterMembers []ClusterMember, netInterface NetworkInterface) (string, error) {
 	// Get all local IP addresses
-	localIPs, err := getLocalIPs()
+	localIPs, err := netInterface.GetLocalIPs()
 	if err != nil {
 		return "", fmt.Errorf("failed to get local IPs: %w", err)
 	}
