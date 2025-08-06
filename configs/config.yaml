@@ -1,28 +1,47 @@
-# Example configuration for pg-metako PostgreSQL replication management
-nodes:
-  - name: "master-1"
-    host: "localhost"
-    port: 5432
-    role: "master"
-    username: "postgres"
-    password: "password"
-    database: "myapp"
-  
-  - name: "slave-1"
-    host: "localhost"
-    port: 5433
+# Example configuration for pg-metako distributed PostgreSQL cluster management
+
+# Node identification - This identifies this pg-metako instance
+identity:
+  node_name: "pg-metako-node1"    # Unique name for this node
+  local_db_host: "localhost"      # Local PostgreSQL instance host
+  local_db_port: 5432            # Local PostgreSQL instance port
+  api_host: "0.0.0.0"            # API host for inter-node communication
+  api_port: 8080                 # API port for inter-node communication
+
+# Local PostgreSQL database configuration
+local_db:
+  name: "postgres-node1"
+  host: "localhost"
+  port: 5432
+  role: "master"                 # Role of the local PostgreSQL instance
+  username: "postgres"
+  password: "password"
+  database: "myapp"
+
+# Other pg-metako nodes in the cluster
+cluster_members:
+  - node_name: "pg-metako-node2"
+    api_host: "192.168.1.102"
+    api_port: 8080
     role: "slave"
-    username: "postgres"
-    password: "password"
-    database: "myapp"
   
-  - name: "slave-2"
-    host: "localhost"
-    port: 5434
+  - node_name: "pg-metako-node3"
+    api_host: "192.168.1.103"
+    api_port: 8080
     role: "slave"
-    username: "postgres"
-    password: "password"
-    database: "myapp"
+
+# Coordination settings for distributed consensus
+coordination:
+  cluster_mode:
+    heartbeat_interval: "10s"
+    communication_timeout: "5s"
+    failover_timeout: "30s"
+    min_consensus_nodes: 2
+    local_node_preference: 0.8
+  pair_mode:
+    enable: true
+    failover_delay: "10s"
+    failure_threshold: 3
 
 # Health check configuration
 health_check:
@@ -38,6 +57,6 @@ load_balancer:
 
 # Security configuration
 security:
-  tls_enabled: true
-  cert_file: "/etc/ssl/certs/pg-metako.crt"
-  key_file: "/etc/ssl/private/pg-metako.key"
+  tls_enabled: false
+  # cert_file: "/etc/ssl/certs/pg-metako.crt"
+  # key_file: "/etc/ssl/private/pg-metako.key"
